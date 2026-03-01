@@ -40,6 +40,62 @@ FEE = 0.0025 #starter fee
 BUY_MARKER='s'; SELL_MARKER='o'
 PRICE_COLOR='#000000'
 
+# Binary mask categories for the switchboard UI
+MASK_CATEGORIES = {
+    "PHI Gates (2)": [
+        ("PHI_OOS_UP", "Price above all PHI values"),
+        ("PHI_OOS_DOWN", "Price below all PHI values"),
+    ],
+    "PHI Cross/Trend (4)": [
+        ("PHI_CROSS_UP", "Short PHI crossed above long PHI"),
+        ("PHI_CROSS_DOWN", "Short PHI crossed below long PHI"),
+        ("PHI_TREND_UP", "All PHI values ascending"),
+        ("PHI_TREND_DOWN", "All PHI values descending"),
+    ],
+    "Bollinger Walls (6)": [
+        ("BOOL_STD_D1", "Price below first lower band"),
+        ("BOOL_STD_D2", "Price below second lower band"),
+        ("BOOL_STD_D3", "Price below third lower band"),
+        ("BOOL_STD_U1", "Price above first upper band"),
+        ("BOOL_STD_U2", "Price above second upper band"),
+        ("BOOL_STD_U3", "Price above third upper band"),
+    ],
+    "CRAP Breath (24)": [
+        ("CRAP5_7_U",      "CRAP_5_7 above +threshold"),
+        ("CRAP9_2_U",      "CRAP_9_2 above +threshold"),
+        ("CRAP14_8_U",     "CRAP_14_8 above +threshold"),
+        ("CRAP24_U",       "CRAP_24 above +threshold"),
+        ("CRAP5_7_D",      "CRAP_5_7 below -threshold"),
+        ("CRAP9_2_D",      "CRAP_9_2 below -threshold"),
+        ("CRAP14_8_D",     "CRAP_14_8 below -threshold"),
+        ("CRAP24_D",       "CRAP_24 below -threshold"),
+        ("CRAP5_7_MU",     "CRAP_5_7 increasing"),
+        ("CRAP9_2_MU",     "CRAP_9_2 increasing"),
+        ("CRAP14_8_MU",    "CRAP_14_8 increasing"),
+        ("CRAP24_MU",      "CRAP_24 increasing"),
+        ("CRAP5_7_MD",     "CRAP_5_7 decreasing"),
+        ("CRAP9_2_MD",     "CRAP_9_2 decreasing"),
+        ("CRAP14_8_MD",    "CRAP_14_8 decreasing"),
+        ("CRAP24_MD",      "CRAP_24 decreasing"),
+        ("CRAP5_7_PEAK",   "CRAP_5_7 at 2-min peak"),
+        ("CRAP9_2_PEAK",   "CRAP_9_2 at 2-min peak"),
+        ("CRAP14_8_PEAK",  "CRAP_14_8 at 2-min peak"),
+        ("CRAP24_PEAK",    "CRAP_24 at 2-min peak"),
+        ("CRAP5_7_TROUGH", "CRAP_5_7 at 2-min trough"),
+        ("CRAP9_2_TROUGH", "CRAP_9_2 at 2-min trough"),
+        ("CRAP14_8_TROUGH","CRAP_14_8 at 2-min trough"),
+        ("CRAP24_TROUGH",  "CRAP_24 at 2-min trough"),
+    ],
+    "RSI Pulse (2)": [
+        ("RSI_OVERSOLD",   "Both RSIs below 9.01"),
+        ("RSI_OVERBOUGHT", "Both RSIs above 89.99"),
+    ],
+    "THETA Spine (2)": [
+        ("THETA_BUY",  "Thetas aligned & below 9.01"),
+        ("THETA_SELL", "Thetas aligned & above 9.01"),
+    ],
+}
+
 # HELPERS
 
 #HELP ME HELP YOU HELP US
@@ -363,6 +419,165 @@ def compute_trade_metrics(trades, start_usd=1000.0):
     return {'total_roi': total_roi, 'trades': len(paired), 'per_trade_rois': rois, 'final_value': total}
 
 
+# ---------------------------------------------------------------------------
+# MaskSwitchboard: collapsible toggle panel for all 40 binary masks
+# ---------------------------------------------------------------------------
+class MaskSwitchboard(BoxLayout):
+    """
+    A vertical BoxLayout containing one collapsible section per mask category.
+    Each section has:
+      • a header row with the category name, a ▼/▶ collapse button, and
+        "All ON" / "All OFF" buttons
+      • one toggle row per mask (green = ON, gray = OFF)
+    Toggle states are stored in self.toggle_states keyed by mask name.
+    """
+
+    # Colours used for toggle buttons
+    _COLOR_ON  = (0.18, 0.65, 0.18, 1)   # green
+    _COLOR_OFF = (0.45, 0.45, 0.45, 1)   # gray
+
+    def __init__(self, categories, **kwargs):
+        kwargs.setdefault('orientation', 'vertical')
+        kwargs.setdefault('size_hint_y', None)
+        kwargs.setdefault('spacing', 5)
+        super().__init__(**kwargs)
+        self.bind(minimum_height=self.setter('height'))
+
+        # Flat dict: mask_name -> bool (initial state = False)
+        self.toggle_states = {
+            name: False
+            for masks in categories.values()
+            for name, _ in masks
+        }
+        # Keep references to per-mask toggle buttons so colours stay in sync
+        self._toggle_buttons = {}   # mask_name -> Button
+
+        for cat_name, masks in categories.items():
+            self._build_category(cat_name, masks)
+
+    # ------------------------------------------------------------------
+    # Build one collapsible category block
+    # ------------------------------------------------------------------
+    def _build_category(self, cat_name, masks):
+        # Outer container for the whole category (header + body)
+        cat_box = BoxLayout(orientation='vertical', size_hint_y=None, spacing=2)
+        cat_box.bind(minimum_height=cat_box.setter('height'))
+
+        # --- Header row ---
+        header = BoxLayout(size_hint_y=None, height=32, spacing=4)
+
+        # Collapse toggle (▼ = expanded, ▲ = collapsed)
+        collapse_btn = Button(
+            text='▼', size_hint_x=None, width=28,
+            background_color=(0.25, 0.25, 0.45, 1), font_size=13,
+        )
+
+        cat_label = Label(
+            text=f'[b]{cat_name}[/b]', markup=True,
+            halign='left', size_hint_x=1, font_size=13,
+        )
+        cat_label.bind(size=cat_label.setter('text_size'))
+
+        all_on_btn  = Button(text='All ON',  size_hint_x=None, width=60,
+                             background_color=self._COLOR_ON,  font_size=11)
+        all_off_btn = Button(text='All OFF', size_hint_x=None, width=60,
+                             background_color=self._COLOR_OFF, font_size=11)
+
+        header.add_widget(collapse_btn)
+        header.add_widget(cat_label)
+        header.add_widget(all_on_btn)
+        header.add_widget(all_off_btn)
+        cat_box.add_widget(header)
+
+        # --- Body: one row per mask ---
+        body = BoxLayout(orientation='vertical', size_hint_y=None, spacing=2)
+        body.bind(minimum_height=body.setter('height'))
+
+        for mask_name, tooltip in masks:
+            row = self._build_mask_row(mask_name, tooltip)
+            body.add_widget(row)
+
+        cat_box.add_widget(body)
+        self.add_widget(cat_box)
+
+        # --- Wire up collapse ---
+        def toggle_collapse(instance):
+            if body.height > 0:
+                # Collapse: hide body
+                body.height = 0
+                body.opacity = 0
+                body.disabled = True
+                instance.text = '▶'
+            else:
+                # Expand: restore body
+                body.disabled = False
+                body.opacity = 1
+                body.bind(minimum_height=body.setter('height'))
+                body.height = body.minimum_height
+                instance.text = '▼'
+
+        collapse_btn.bind(on_press=toggle_collapse)
+
+        # --- Wire up All ON / All OFF ---
+        mask_names = [n for n, _ in masks]
+
+        def set_all_on(instance, names=mask_names):
+            for nm in names:
+                self._set_mask(nm, True)
+
+        def set_all_off(instance, names=mask_names):
+            for nm in names:
+                self._set_mask(nm, False)
+
+        all_on_btn.bind(on_press=set_all_on)
+        all_off_btn.bind(on_press=set_all_off)
+
+    # ------------------------------------------------------------------
+    # Build a single mask toggle row
+    # ------------------------------------------------------------------
+    def _build_mask_row(self, mask_name, tooltip):
+        row = BoxLayout(size_hint_y=None, height=26, spacing=4)
+
+        btn = Button(
+            text='OFF',
+            size_hint_x=None, width=46,
+            background_color=self._COLOR_OFF,
+            font_size=11,
+        )
+        btn.bind(on_press=lambda instance, nm=mask_name: self._toggle_mask(nm))
+        self._toggle_buttons[mask_name] = btn
+
+        lbl = Label(
+            text=mask_name,
+            halign='left', size_hint_x=1,
+            font_size=11,
+        )
+        lbl.bind(size=lbl.setter('text_size'))
+
+        row.add_widget(btn)
+        row.add_widget(lbl)
+        return row
+
+    # ------------------------------------------------------------------
+    # State management helpers
+    # ------------------------------------------------------------------
+    def _toggle_mask(self, mask_name):
+        """Flip a single mask on/off."""
+        self._set_mask(mask_name, not self.toggle_states[mask_name])
+
+    def _set_mask(self, mask_name, state):
+        """Set a single mask to True/False and update its button colour."""
+        self.toggle_states[mask_name] = state
+        btn = self._toggle_buttons.get(mask_name)
+        if btn is not None:
+            btn.text = 'ON' if state else 'OFF'
+            btn.background_color = self._COLOR_ON if state else self._COLOR_OFF
+
+    def get_active_masks(self):
+        """Return the list of mask names that are currently ON."""
+        return [name for name, state in self.toggle_states.items() if state]
+
+
 # UI with debug box and event-values box
 class PrototypeUI(BoxLayout):
     start_index = NumericProperty(1000); page_size = NumericProperty(2000); df = None
@@ -405,62 +620,13 @@ class PrototypeUI(BoxLayout):
         self.page_input.bind(on_text_validate=self.update_page_size)
         ps_row.add_widget(self.page_input); lc.add_widget(ps_row)
 
-        # Binary Features - UPDATED: Two feature groups, each with B4/AF/Enable toggles
-        # Feature 1
-        lc.add_widget(Label(text='Feature 1', size_hint_y=None, height=20))
-        # B4 | 2BUY
-        row1 = BoxLayout(size_hint_y=None, height=28)
-        row1.add_widget(Label(text='B4', size_hint_x=0.2))
-        row1.add_widget(Label(text='2BUY', size_hint_x=0.2))
-        self.f1_toggle1_on = Button(text='ON', size_hint_x=0.3, background_color=(0.5, 0.5, 0.5, 1), font_size=12)
-        self.f1_toggle1_off = Button(text='OFF', size_hint_x=0.3, background_color=(0, 1, 0, 1), font_size=12)
-        self.f1_toggle1_on.bind(on_press=lambda x: self.set_toggle('f1_1', True))
-        self.f1_toggle1_off.bind(on_press=lambda x: self.set_toggle('f1_1', False))
-        row1.add_widget(self.f1_toggle1_on); row1.add_widget(self.f1_toggle1_off); lc.add_widget(row1)
-        # AF | 2BUY
-        row2 = BoxLayout(size_hint_y=None, height=28)
-        row2.add_widget(Label(text='AF', size_hint_x=0.2))
-        row2.add_widget(Label(text='2BUY', size_hint_x=0.2))
-        self.f1_toggle2_on = Button(text='ON', size_hint_x=0.3, background_color=(0.5, 0.5, 0.5, 1), font_size=12)
-        self.f1_toggle2_off = Button(text='OFF', size_hint_x=0.3, background_color=(0, 1, 0, 1), font_size=12)
-        self.f1_toggle2_on.bind(on_press=lambda x: self.set_toggle('f1_2', True))
-        self.f1_toggle2_off.bind(on_press=lambda x: self.set_toggle('f1_2', False))
-        row2.add_widget(self.f1_toggle2_on); row2.add_widget(self.f1_toggle2_off); lc.add_widget(row2)
-        # Enable
-        f1_bottom = BoxLayout(size_hint_y=None, height=28)
-        self.f1_enable_on = Button(text='ON', size_hint_x=0.5, background_color=(0.5, 0.5, 0.5, 1), font_size=12)
-        self.f1_enable_off = Button(text='OFF', size_hint_x=0.5, background_color=(0, 1, 0, 1), font_size=12)
-        self.f1_enable_on.bind(on_press=lambda x: self.set_toggle('f1_enable', True))
-        self.f1_enable_off.bind(on_press=lambda x: self.set_toggle('f1_enable', False))
-        f1_bottom.add_widget(self.f1_enable_on); f1_bottom.add_widget(self.f1_enable_off); lc.add_widget(f1_bottom)
-
-        # Feature 2
-        lc.add_widget(Label(text='Feature 2', size_hint_y=None, height=20))
-        # B4 | 2BUY
-        row3 = BoxLayout(size_hint_y=None, height=28)
-        row3.add_widget(Label(text='B4', size_hint_x=0.2))
-        row3.add_widget(Label(text='2BUY', size_hint_x=0.2))
-        self.f2_toggle1_on = Button(text='ON', size_hint_x=0.3, background_color=(0.5, 0.5, 0.5, 1), font_size=12)
-        self.f2_toggle1_off = Button(text='OFF', size_hint_x=0.3, background_color=(0, 1, 0, 1), font_size=12)
-        self.f2_toggle1_on.bind(on_press=lambda x: self.set_toggle('f2_1', True))
-        self.f2_toggle1_off.bind(on_press=lambda x: self.set_toggle('f2_1', False))
-        row3.add_widget(self.f2_toggle1_on); row3.add_widget(self.f2_toggle1_off); lc.add_widget(row3)
-        # AF | 2BUY
-        row4 = BoxLayout(size_hint_y=None, height=28)
-        row4.add_widget(Label(text='AF', size_hint_x=0.2))
-        row4.add_widget(Label(text='2BUY', size_hint_x=0.2))
-        self.f2_toggle2_on = Button(text='ON', size_hint_x=0.3, background_color=(0.5, 0.5, 0.5, 1), font_size=12)
-        self.f2_toggle2_off = Button(text='OFF', size_hint_x=0.3, background_color=(0, 1, 0, 1), font_size=12)
-        self.f2_toggle2_on.bind(on_press=lambda x: self.set_toggle('f2_2', True))
-        self.f2_toggle2_off.bind(on_press=lambda x: self.set_toggle('f2_2', False))
-        row4.add_widget(self.f2_toggle2_on); row4.add_widget(self.f2_toggle2_off); lc.add_widget(row4)
-        # Enable
-        f2_bottom = BoxLayout(size_hint_y=None, height=28)
-        self.f2_enable_on = Button(text='ON', size_hint_x=0.5, background_color=(0.5, 0.5, 0.5, 1), font_size=12)
-        self.f2_enable_off = Button(text='OFF', size_hint_x=0.5, background_color=(0, 1, 0, 1), font_size=12)
-        self.f2_enable_on.bind(on_press=lambda x: self.set_toggle('f2_enable', True))
-        self.f2_enable_off.bind(on_press=lambda x: self.set_toggle('f2_enable', False))
-        f2_bottom.add_widget(self.f2_enable_on); f2_bottom.add_widget(self.f2_enable_off); lc.add_widget(f2_bottom)
+        # --- Binary Mask Switchboard (replaces Feature 1 / Feature 2) ---
+        lc.add_widget(Label(
+            text='[b]Binary Mask Toggles (40)[/b]', markup=True,
+            size_hint_y=None, height=24, font_size=13,
+        ))
+        self.mask_switchboard = MaskSwitchboard(MASK_CATEGORIES)
+        lc.add_widget(self.mask_switchboard)
 
         # Run Trading Simulation Button
         sim_button = Button(text='Run Trading Simulation', size_hint_y=None, height=40, background_color=(0.2, 0.6, 1, 1))
@@ -480,32 +646,34 @@ class PrototypeUI(BoxLayout):
         right.add_widget(self.canvas_widget)
         self.add_widget(right)
 
-        # Initialize toggle states
-        self.toggle_states = {
-            'f1_1': False, 'f1_2': False, 'f1_enable': False,
-            'f2_1': False, 'f2_2': False, 'f2_enable': False
-        }
+        # Initialize toggle_states as a reference to the switchboard's dict
+        # so callers can still read self.toggle_states directly
+        self.toggle_states = self.mask_switchboard.toggle_states
 
         Clock.schedule_once(lambda dt: self._try_load_default(), 0.1)
 
     def set_toggle(self, toggle_id, state):
-        self.toggle_states[toggle_id] = state
-        # Update button colors (simplified; assume green ON, gray OFF for all)
-        if toggle_id == 'f1_1':
-            self.f1_toggle1_on.background_color = (0, 1, 0, 1) if state else (0.5, 0.5, 0.5, 1)
-            self.f1_toggle1_off.background_color = (1, 0, 0, 1) if not state else (0.5, 0.5, 0.5, 1)
-        # ... (similar for others; omitted for brevity, but implement all)
+        # Delegate to switchboard if the key belongs to a mask; kept for
+        # any external callers that still use the old API.
+        if toggle_id in self.mask_switchboard.toggle_states:
+            self.mask_switchboard._set_mask(toggle_id, state)
+        else:
+            self.toggle_states[toggle_id] = state
         self.debug_box.text = f"{toggle_id} set to {'ON' if state else 'OFF'}"
 
     def run_simulation(self, instance):
         """
-        Execute trading simulation based on Features 1 and 2 binary conditions.
+        Execute trading simulation driven by active binary masks.
+        BUY when PHI_OOS_DOWN is active; SELL when PHI_OOS_UP is active.
         Uses PHI values from the database to trigger buys/sells with fees.
         Updates metrics, plots trade markers, and logs to debug box.
         """
         if self.df is None:
             self.debug_box.text = "No data loaded"
             return
+
+        # Determine which masks are currently ON
+        active_masks = set(self.mask_switchboard.get_active_masks())
 
         # 1. Create view slice
         s = int(self.start_index)
@@ -521,9 +689,9 @@ class PrototypeUI(BoxLayout):
         position = 'USD'  # 'USD' or 'BTC'
         trades = []  # List of (type, index, price, usd_amount, btc_amount)
 
-        # 3. Track previous states for transitions
-        prev_f1_state = False
-        prev_f2_state = False
+        # 3. Track previous states for edge-triggered transitions
+        prev_buy_state  = False
+        prev_sell_state = False
 
         # 4. Iterate through each row
         for idx, row in view.iterrows():
@@ -534,26 +702,26 @@ class PrototypeUI(BoxLayout):
             if pd.isna(price) or any(pd.isna(p) for p in phi_vals):
                 continue
 
-            # Calculate current feature states
-            f1_state = price < min(phi_vals)  # Feature 1: below all PHI
-            f2_state = price > max(phi_vals)  # Feature 2: above all PHI
+            # Derive the two gateway signals from price vs PHI
+            # PHI_OOS_DOWN: price below all PHI => buy signal
+            # PHI_OOS_UP:   price above all PHI => sell signal
+            buy_signal  = price < min(phi_vals)
+            sell_signal = price > max(phi_vals)
 
-            # Apply enables
-            f1_enabled = self.toggle_states.get('f1_enable', False)
-            f2_enabled = self.toggle_states.get('f2_enable', False)
+            # Only act when the corresponding mask is enabled
+            buy_enabled  = 'PHI_OOS_DOWN' in active_masks
+            sell_enabled = 'PHI_OOS_UP'   in active_masks
 
-            # Check for BUY transition (Feature 1)
-            if f1_enabled and not prev_f1_state and f1_state and position == 'USD' and usd > 0:
-                # BUY: btc = usd / (price * (1.0 + FEE))
+            # Check for BUY edge transition
+            if buy_enabled and not prev_buy_state and buy_signal and position == 'USD' and usd > 0:
                 btc = usd / (price * (1.0 + FEE))
                 trades.append(('BUY', idx, price, usd, btc))
                 usd = 0.0
                 position = 'BTC'
                 self.debug_box.text = f"BUY at {price:.2f}"
 
-            # Check for SELL transition (Feature 2)
-            elif f2_enabled and not prev_f2_state and f2_state and position == 'BTC' and btc > 0:
-                # SELL: usd = btc * price * (1.0 - FEE)
+            # Check for SELL edge transition
+            elif sell_enabled and not prev_sell_state and sell_signal and position == 'BTC' and btc > 0:
                 usd = btc * price * (1.0 - FEE)
                 trades.append(('SELL', idx, price, usd, btc))
                 btc = 0.0
@@ -561,63 +729,55 @@ class PrototypeUI(BoxLayout):
                 self.debug_box.text = f"SELL at {price:.2f}"
 
             # Update previous states
-            prev_f1_state = f1_state
-            prev_f2_state = f2_state
+            prev_buy_state  = buy_signal
+            prev_sell_state = sell_signal
 
         # 5. Force close any open BTC position at the last price
-        if position == 'BTC' and btc > 0 and not view.empty:
-            last_price = pd.to_numeric(view.iloc[-1].get('CURRENT_RATE', view.iloc[-1].get('Rate')), errors='coerce')
-            if not pd.isna(last_price):
-                usd = btc * last_price * (1.0 - FEE)
-                trades.append(('SELL', len(view)-1, last_price, usd, btc))
-                btc = 0.0
-                position = 'USD'
-                self.debug_box.text = f"Force SELL at {last_price:.2f}"
+        last_price = 0.0
+        if not view.empty:
+            last_price = pd.to_numeric(
+                view.iloc[-1].get('CURRENT_RATE', view.iloc[-1].get('Rate')), errors='coerce'
+            )
+            if pd.isna(last_price):
+                last_price = 0.0
+        if position == 'BTC' and btc > 0 and last_price > 0:
+            usd = btc * last_price * (1.0 - FEE)
+            trades.append(('SELL', len(view) - 1, last_price, usd, btc))
+            btc = 0.0
+            position = 'USD'
+            self.debug_box.text = f"Force SELL at {last_price:.2f}"
 
         # 6. Calculate ROI and trade count
-        final_usd = usd + (btc * (last_price if position == 'BTC' else 0))
+        final_usd = usd + (btc * last_price if position == 'BTC' else 0)
         roi = ((final_usd - 1000.0) / 1000.0) * 100 if final_usd != 1000.0 else 0.0
-        trade_pairs = len([t for t in trades if t[0] == 'SELL'])  # Completed pairs
+        trade_pairs = len([t for t in trades if t[0] == 'SELL'])
 
         # 7. Update metrics_label
+        active_count = len(active_masks)
         self.metrics_label.text = (
             f"TRADING RESULTS:\n"
             f"ROI: {roi:.2f}%\n"
             f"Trades: {trade_pairs}\n"
             f"Final USD: ${final_usd:.2f}\n"
-            f"Position: {position}"
+            f"Position: {position}\n"
+            f"Active masks: {active_count}"
         )
 
         # 8. Plot trade markers on the chart
         self.plot_all()  # Refresh base plot
         x_vals = view['TIME']
         for trade in trades:
-            ttype, idx, price, _, _ = trade
+            ttype, tidx, tprice, _, _ = trade
             if ttype == 'BUY':
-                self.ax_price.scatter(x_vals.iloc[idx], price, color='green', marker='^', s=50, zorder=10)
+                self.ax_price.scatter(x_vals.iloc[tidx], tprice, color='green', marker='^', s=50, zorder=10)
             elif ttype == 'SELL':
-                self.ax_price.scatter(x_vals.iloc[idx], price, color='red', marker='v', s=50, zorder=10)
+                self.ax_price.scatter(x_vals.iloc[tidx], tprice, color='red', marker='v', s=50, zorder=10)
 
         # 9. Refresh canvas
         self.canvas_widget.draw()
 
         # Final debug update
-        self.debug_box.text = f"Simulation complete: {len(trades)} trades"
-
-        # Filter based on enabled features (for now, just count; expand logic later)
-        buy_signals = [s for s in signals if s[0] == 'buy' and self.toggle_states['f1_enable']]  # Example: only F1
-        sell_signals = [s for s in signals if s[0] == 'sell' and self.toggle_states['f2_enable']]  # Example: only F2
-
-        # Update plot with dots
-        self.plot_all()
-        x = view['TIME']
-        for sig, idx in buy_signals:
-            self.ax_price.scatter(x.iloc[idx], view['CURRENT_RATE'].iloc[idx], color='green', s=20, zorder=10)
-        for sig, idx in sell_signals:
-            self.ax_price.scatter(x.iloc[idx], view['CURRENT_RATE'].iloc[idx], color='red', s=20, zorder=10)
-        self.canvas_widget.draw()
-
-        self.debug_box.text = f"Simulation: {len(buy_signals)} BUY, {len(sell_signals)} SELL signals plotted"
+        self.debug_box.text = f"Simulation complete: {len(trades)} trades, {active_count} masks active"
 
 
     def _try_load_default(self):
