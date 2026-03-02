@@ -650,6 +650,10 @@ class PrototypeUI(BoxLayout):
         # so callers can still read self.toggle_states directly
         self.toggle_states = self.mask_switchboard.toggle_states
 
+        # Holds the DataFrame loaded from the companion *_masks.feather file.
+        # None until a SQLite file is successfully loaded and a mask file is found.
+        self.masks_df = None
+
         Clock.schedule_once(lambda dt: self._try_load_default(), 0.1)
 
     def set_toggle(self, toggle_id, state):
@@ -664,18 +668,25 @@ class PrototypeUI(BoxLayout):
     def run_simulation(self, instance):
         """
         Execute trading simulation driven by active binary masks.
-        BUY when PHI_OOS_DOWN is active; SELL when PHI_OOS_UP is active.
-        Uses PHI values from the database to trigger buys/sells with fees.
-        Updates metrics, plots trade markers, and logs to debug box.
+        BUY when PHI_OOS_DOWN mask is True AND its toggle is ON.
+        SELL when PHI_OOS_UP mask is True AND its toggle is ON.
+        Signal values are read from the precomputed mask file (*_masks.feather),
+        not recalculated on the fly.  Updates metrics, plots trade markers and
+        overlay dots for mask signals, then logs to debug box.
         """
         if self.df is None:
             self.debug_box.text = "No data loaded"
             return
 
-        # Determine which masks are currently ON
+        # Guard: mask file must be loaded before simulation can run
+        if self.masks_df is None:
+            self.debug_box.text = "No mask file loaded. Please run aa.py first."
+            return
+
+        # Determine which masks are currently toggled ON by the user
         active_masks = set(self.mask_switchboard.get_active_masks())
 
-        # 1. Create view slice
+        # 1. Create view slice for indicator data
         s = int(self.start_index)
         e = min(len(self.df), s + int(self.page_size))
         view = self.df.iloc[s:e].reset_index(drop=True)
@@ -683,36 +694,42 @@ class PrototypeUI(BoxLayout):
             self.debug_box.text = "Empty view"
             return
 
-        # 2. Initialize trading state
+        # 2. Slice the mask DataFrame to exactly the same rows as 'view'.
+        #    reset_index(drop=True) ensures integer positions align with 'view'.
+        view_masks = self.masks_df.iloc[s:e].reset_index(drop=True)
+        # Sanity-check: both slices must cover the same number of rows
+        if len(view_masks) != len(view):
+            self.debug_box.text = "Mask/indicator length mismatch"
+            return
+
+        # 3. Initialize trading state
         usd = 1000.0
         btc = 0.0
         position = 'USD'  # 'USD' or 'BTC'
         trades = []  # List of (type, index, price, usd_amount, btc_amount)
 
-        # 3. Track previous states for edge-triggered transitions
+        # 4. Track previous states for edge-triggered transitions
         prev_buy_state  = False
         prev_sell_state = False
 
-        # 4. Iterate through each row
+        # 5. Iterate through each row using the mask file for signals
         for idx, row in view.iterrows():
             price = pd.to_numeric(row.get('CURRENT_RATE', row.get('Rate')), errors='coerce')
-            phi_vals = [pd.to_numeric(row.get(f'PHI_{p}'), errors='coerce') for p in ['5_7', '9_2', '14_8', '24']]
 
-            # Skip if price or any PHI is NaN
-            if pd.isna(price) or any(pd.isna(p) for p in phi_vals):
+            # Skip rows where price is not a valid number
+            if pd.isna(price):
                 continue
 
-            # Derive the two gateway signals from price vs PHI
-            # PHI_OOS_DOWN: price below all PHI => buy signal
-            # PHI_OOS_UP:   price above all PHI => sell signal
-            buy_signal  = price < min(phi_vals)
-            sell_signal = price > max(phi_vals)
+            # Read buy/sell signals from the precomputed mask columns.
+            # Fall back to False if the expected column is absent in the file.
+            buy_signal  = bool(view_masks.loc[idx, 'PHI_OOS_DOWN']) if 'PHI_OOS_DOWN' in view_masks.columns else False
+            sell_signal = bool(view_masks.loc[idx, 'PHI_OOS_UP'])   if 'PHI_OOS_UP'   in view_masks.columns else False
 
-            # Only act when the corresponding mask is enabled
+            # Toggles gate whether each signal actually triggers a trade
             buy_enabled  = 'PHI_OOS_DOWN' in active_masks
             sell_enabled = 'PHI_OOS_UP'   in active_masks
 
-            # Check for BUY edge transition
+            # Check for BUY edge transition (False → True)
             if buy_enabled and not prev_buy_state and buy_signal and position == 'USD' and usd > 0:
                 btc = usd / (price * (1.0 + FEE))
                 trades.append(('BUY', idx, price, usd, btc))
@@ -720,7 +737,7 @@ class PrototypeUI(BoxLayout):
                 position = 'BTC'
                 self.debug_box.text = f"BUY at {price:.2f}"
 
-            # Check for SELL edge transition
+            # Check for SELL edge transition (False → True)
             elif sell_enabled and not prev_sell_state and sell_signal and position == 'BTC' and btc > 0:
                 usd = btc * price * (1.0 - FEE)
                 trades.append(('SELL', idx, price, usd, btc))
@@ -728,11 +745,11 @@ class PrototypeUI(BoxLayout):
                 position = 'USD'
                 self.debug_box.text = f"SELL at {price:.2f}"
 
-            # Update previous states
+            # Update edge-detection state for the next iteration
             prev_buy_state  = buy_signal
             prev_sell_state = sell_signal
 
-        # 5. Force close any open BTC position at the last price
+        # 6. Force close any open BTC position at the last price
         last_price = 0.0
         if not view.empty:
             last_price = pd.to_numeric(
@@ -747,12 +764,12 @@ class PrototypeUI(BoxLayout):
             position = 'USD'
             self.debug_box.text = f"Force SELL at {last_price:.2f}"
 
-        # 6. Calculate ROI and trade count
+        # 7. Calculate ROI and trade count
         final_usd = usd + (btc * last_price if position == 'BTC' else 0)
         roi = ((final_usd - 1000.0) / 1000.0) * 100 if final_usd != 1000.0 else 0.0
         trade_pairs = len([t for t in trades if t[0] == 'SELL'])
 
-        # 7. Update metrics_label
+        # 8. Update metrics_label
         active_count = len(active_masks)
         self.metrics_label.text = (
             f"TRADING RESULTS:\n"
@@ -763,9 +780,11 @@ class PrototypeUI(BoxLayout):
             f"Active masks: {active_count}"
         )
 
-        # 8. Plot trade markers on the chart
-        self.plot_all()  # Refresh base plot
+        # 9. Refresh base plot then overlay trade markers and mask signal dots
+        self.plot_all()
         x_vals = view['TIME']
+
+        # Trade markers: green up-triangle for BUY, red down-triangle for SELL
         for trade in trades:
             ttype, tidx, tprice, _, _ = trade
             if ttype == 'BUY':
@@ -773,10 +792,31 @@ class PrototypeUI(BoxLayout):
             elif ttype == 'SELL':
                 self.ax_price.scatter(x_vals.iloc[tidx], tprice, color='red', marker='v', s=50, zorder=10)
 
-        # 9. Refresh canvas
+        # Visual mask feedback: small dots wherever a mask signal is True.
+        # Lime dots = PHI_OOS_DOWN (buy) mask active; red dots = PHI_OOS_UP (sell) mask active.
+        # These confirm the mask file is aligned and help debug mask logic.
+        # (masks_df is guaranteed non-None here due to the early-return guard above)
+        if 'PHI_OOS_DOWN' in view_masks.columns:
+            buy_dots = view_masks[view_masks['PHI_OOS_DOWN']].index
+            for dot_idx in buy_dots:
+                self.ax_price.scatter(
+                    x_vals.iloc[dot_idx],
+                    view['CURRENT_RATE'].iloc[dot_idx],
+                    color='lime', s=20, marker='.', zorder=5, alpha=0.7
+                )
+        if 'PHI_OOS_UP' in view_masks.columns:
+            sell_dots = view_masks[view_masks['PHI_OOS_UP']].index
+            for dot_idx in sell_dots:
+                self.ax_price.scatter(
+                    x_vals.iloc[dot_idx],
+                    view['CURRENT_RATE'].iloc[dot_idx],
+                    color='red', s=20, marker='.', zorder=5, alpha=0.7
+                )
+
+        # 10. Refresh canvas to display all new annotations
         self.canvas_widget.draw()
 
-        # Final debug update
+        # Final summary in debug box
         self.debug_box.text = f"Simulation complete: {len(trades)} trades, {active_count} masks active"
 
 
@@ -806,13 +846,42 @@ class PrototypeUI(BoxLayout):
             self.page_input.text = str(self.page_size)
             self.status_label.text = f"Loaded: {path}"
             self.rows_label.text = f"Rows: {len(df)}"
-            # FIXED: Removed references to removed UI elements
-            self.debug_box.text = ""
+
+            # --- Load companion mask file (*_masks.feather) ---
+            # Safely strip the file extension and append _masks.feather so that
+            # extensions like .sqlite, .db (and any other variant) are handled
+            # correctly without risking false substring replacements.
+            base, _ = os.path.splitext(path)
+            mask_path = base + '_masks.feather'
+            if os.path.exists(mask_path):
+                # Read the feather file produced by aa.py
+                self.masks_df = pd.read_feather(mask_path)
+                # aa.py may store the original row index as a column called 'index';
+                # restore it as the DataFrame index so iloc slicing stays aligned.
+                if 'index' in self.masks_df.columns:
+                    self.masks_df = self.masks_df.set_index('index')
+                # Warn if the mask row count doesn't match the indicator row count
+                if len(self.masks_df) != len(self.df):
+                    self.debug_box.text = (
+                        f"Warning: Mask rows ({len(self.masks_df)}) "
+                        f"!= indicators ({len(self.df)})"
+                    )
+                else:
+                    # Report the number of mask columns that were loaded
+                    self.debug_box.text = f"Loaded {len(self.masks_df.columns)} masks"
+            else:
+                # No mask file next to the SQLite — user must run aa.py first
+                self.masks_df = None
+                self.debug_box.text = "No mask file found - run aa.py first"
+            # --- end mask loading ---
+
             # initial draw
             self.on_redraw_dots(None)
         except Exception as ex:
             msg = f"Load error: {ex}"
             self.df = None
+            # Clear any previously loaded masks so simulation can't use stale data
+            self.masks_df = None
             self.status_label.text = msg
             try:
                 self.rows_label.text = "Rows: N/A"
