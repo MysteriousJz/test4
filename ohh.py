@@ -97,14 +97,66 @@ MASK_CATEGORIES = {
     ],
 }
 
-# Category colors for mask visualization
+# Per-mask colors: BUY signals = shades of green, SELL signals = shades of red
 MASK_COLORS = {
-    "PHI Gates (2)":        "purple",
-    "PHI Cross/Trend (4)":  "blue",
-    "Bollinger Walls (6)":  "cyan",
-    "CRAP Breath (24)":     "orange",
-    "RSI Pulse (2)":        "pink",
-    "THETA Spine (2)":      "magenta",
+    # --- BUY SIGNALS (shades of green) ---
+    # PHI Gates (Buy)
+    "PHI_OOS_DOWN":    "#006400",   # dark green
+    # PHI Cross/Trend (Buy)
+    "PHI_CROSS_UP":    "#228B22",   # forest green
+    "PHI_TREND_UP":    "#2E8B57",   # sea green
+    # Bollinger Walls (Buy)
+    "BOOL_STD_D1":     "#3CB371",   # medium sea green
+    "BOOL_STD_D2":     "#32CD32",   # lime green
+    "BOOL_STD_D3":     "#00FF7F",   # spring green
+    # CRAP Breath (Buy – Oversold)
+    "CRAP5_7_D":       "#009933",   # deep green
+    "CRAP9_2_D":       "#00AA44",
+    "CRAP14_8_D":      "#00CC44",
+    "CRAP24_D":        "#00EE55",
+    # CRAP Breath (Buy – Trough)
+    "CRAP5_7_TROUGH":  "#66FF66",   # light green
+    "CRAP9_2_TROUGH":  "#44CC44",
+    "CRAP14_8_TROUGH": "#33AA33",
+    "CRAP24_TROUGH":   "#00FF66",
+    # CRAP Breath (Buy – Momentum Up)
+    "CRAP5_7_MU":      "#99FF99",   # pale green
+    "CRAP9_2_MU":      "#88EE88",
+    "CRAP14_8_MU":     "#77DD77",
+    "CRAP24_MU":       "#66CC66",
+    # RSI Pulse (Buy)
+    "RSI_OVERSOLD":    "#00FA9A",   # medium spring green
+    # THETA Spine (Buy)
+    "THETA_BUY":       "#7CFC00",   # lawn green
+    # --- SELL SIGNALS (shades of red) ---
+    # PHI Gates (Sell)
+    "PHI_OOS_UP":      "#8B0000",   # dark red
+    # PHI Cross/Trend (Sell)
+    "PHI_CROSS_DOWN":  "#B22222",   # firebrick
+    "PHI_TREND_DOWN":  "#DC143C",   # crimson
+    # Bollinger Walls (Sell)
+    "BOOL_STD_U1":     "#FF4500",   # orange red
+    "BOOL_STD_U2":     "#FF6347",   # tomato
+    "BOOL_STD_U3":     "#FF7F7F",   # light coral
+    # CRAP Breath (Sell – Overbought)
+    "CRAP5_7_U":       "#CC0000",
+    "CRAP9_2_U":       "#DD1111",
+    "CRAP14_8_U":      "#EE2222",
+    "CRAP24_U":        "#FF3333",
+    # CRAP Breath (Sell – Peak)
+    "CRAP5_7_PEAK":    "#FF8080",
+    "CRAP9_2_PEAK":    "#FF6666",
+    "CRAP14_8_PEAK":   "#FF4444",
+    "CRAP24_PEAK":     "#FF2222",
+    # CRAP Breath (Sell – Momentum Down)
+    "CRAP5_7_MD":      "#FFB3B3",   # pale red/pink
+    "CRAP9_2_MD":      "#FFA0A0",
+    "CRAP14_8_MD":     "#FF8888",
+    "CRAP24_MD":       "#FF7070",
+    # RSI Pulse (Sell)
+    "RSI_OVERBOUGHT":  "#FF0055",   # hot red
+    # THETA Spine (Sell)
+    "THETA_SELL":      "#A50000",   # very dark red
 }
 
 # HELPERS
@@ -711,11 +763,15 @@ class PrototypeUI(BoxLayout):
             self.debug_box.text = "Mask/indicator length mismatch"
             return
 
-        # 3. Build a reverse mapping: mask column name → category name
-        mask_to_category = {}
-        for cat_name, masks in MASK_CATEGORIES.items():
-            for mask_name, _ in masks:
-                mask_to_category[mask_name] = cat_name
+        # 3. Define buy-side masks for legend bucketing
+        BUY_MASKS = {
+            "PHI_OOS_DOWN", "PHI_CROSS_UP", "PHI_TREND_UP",
+            "BOOL_STD_D1", "BOOL_STD_D2", "BOOL_STD_D3",
+            "CRAP5_7_D", "CRAP9_2_D", "CRAP14_8_D", "CRAP24_D",
+            "CRAP5_7_TROUGH", "CRAP9_2_TROUGH", "CRAP14_8_TROUGH", "CRAP24_TROUGH",
+            "CRAP5_7_MU", "CRAP9_2_MU", "CRAP14_8_MU", "CRAP24_MU",
+            "RSI_OVERSOLD", "THETA_BUY",
+        }
 
         # 4. Update metrics label (visualization mode — no trading)
         active_count = len(active_masks)
@@ -729,16 +785,19 @@ class PrototypeUI(BoxLayout):
         self.plot_all()
         x_vals = view['TIME']
 
-        # 6. Track which categories have been plotted for the legend
-        plotted_categories = set()
+        # 6. Track buy/sell signal types plotted for the legend
+        plotted_buy = False
+        plotted_sell = False
 
         # 7. Colored dots for every active mask
         for mask_name in active_masks:
             if mask_name in view_masks.columns:
-                category = mask_to_category.get(mask_name)
-                if category and category in MASK_COLORS:
-                    color = MASK_COLORS[category]
-                    plotted_categories.add(category)
+                color = MASK_COLORS.get(mask_name)
+                if color:
+                    if mask_name in BUY_MASKS:
+                        plotted_buy = True
+                    else:
+                        plotted_sell = True
                     mask_bool = view_masks[mask_name].fillna(0).astype(bool)
                     if mask_bool.any():
                         self.ax_price.scatter(
@@ -747,10 +806,13 @@ class PrototypeUI(BoxLayout):
                             color=color, s=15, marker='.', zorder=5, alpha=0.5
                         )
 
-        # 8. Add legend for active categories
-        if plotted_categories:
-            legend_elements = [Patch(facecolor=MASK_COLORS[cat], label=cat)
-                               for cat in plotted_categories]
+        # 8. Add legend for buy/sell signal types
+        legend_elements = []
+        if plotted_buy:
+            legend_elements.append(Patch(facecolor="#228B22", label="Buy Signals"))
+        if plotted_sell:
+            legend_elements.append(Patch(facecolor="#CC0000", label="Sell Signals"))
+        if legend_elements:
             self.ax_price.legend(handles=legend_elements, loc='upper right', fontsize='small')
 
         # 9. Refresh canvas to display all new annotations
@@ -794,10 +856,10 @@ class PrototypeUI(BoxLayout):
                 # Use a context manager so the connection is always closed cleanly.
                 try:
                     with sqlite3.connect(mask_path) as mask_conn:
-                        self.masks_df = pd.read_sql_query("SELECT * FROM masks", mask_conn)
+                        self.masks_df = pd.read_sql_query("SELECT * FROM binary_masks", mask_conn)
                 except Exception:
                     self.masks_df = None
-                    self.debug_box.text = "masks.sqlite found but 'masks' table missing"
+                    self.debug_box.text = "masks.sqlite found but 'binary_masks' table missing"
                     self.on_redraw_dots(None)
                     return
                 # Restore stored row index if present so iloc slicing stays aligned
