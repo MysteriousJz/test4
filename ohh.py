@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.dates import DateFormatter, AutoDateFormatter, AutoDateLocator
+from matplotlib.patches import Patch
 
 # Kivy GUI (required by this app)
 from kivy.app import App
@@ -94,6 +95,16 @@ MASK_CATEGORIES = {
         ("THETA_BUY",  "Thetas aligned & below 9.01"),
         ("THETA_SELL", "Thetas aligned & above 9.01"),
     ],
+}
+
+# Category colors for mask visualization
+MASK_COLORS = {
+    "PHI Gates (2)":        "purple",
+    "PHI Cross/Trend (4)":  "blue",
+    "Bollinger Walls (6)":  "cyan",
+    "CRAP Breath (24)":     "orange",
+    "RSI Pulse (2)":        "pink",
+    "THETA Spine (2)":      "magenta",
 }
 
 # HELPERS
@@ -667,18 +678,16 @@ class PrototypeUI(BoxLayout):
 
     def run_simulation(self, instance):
         """
-        Execute trading simulation driven by active binary masks.
-        BUY when PHI_OOS_DOWN mask is True AND its toggle is ON.
-        SELL when PHI_OOS_UP mask is True AND its toggle is ON.
-        Signal values are read from the precomputed mask file (masks.sqlite),
-        not recalculated on the fly.  Updates metrics, plots trade markers and
-        overlay dots for mask signals, then logs to debug box.
+        Visualize active mask signals as category-colored dots overlaid on the price chart.
+        No trading logic is executed — this is a pure visualization tool.
+        Each active mask is represented by dots in its category color wherever that mask is True.
+        A legend identifies which color corresponds to which category.
         """
         if self.df is None:
             self.debug_box.text = "No data loaded"
             return
 
-        # Guard: mask file must be loaded before simulation can run
+        # Guard: mask file must be loaded before visualization can run
         if self.masks_df is None:
             self.debug_box.text = "No mask file loaded. Please run aa.py first."
             return
@@ -702,122 +711,52 @@ class PrototypeUI(BoxLayout):
             self.debug_box.text = "Mask/indicator length mismatch"
             return
 
-        # 3. Initialize trading state
-        usd = 1000.0
-        btc = 0.0
-        position = 'USD'  # 'USD' or 'BTC'
-        trades = []  # List of (type, index, price, usd_amount, btc_amount)
+        # 3. Build a reverse mapping: mask column name → category name
+        mask_to_category = {}
+        for cat_name, masks in MASK_CATEGORIES.items():
+            for mask_name, _ in masks:
+                mask_to_category[mask_name] = cat_name
 
-        # 4. Track previous states for edge-triggered transitions
-        prev_buy_state  = False
-        prev_sell_state = False
-
-        # 5. Iterate through each row using the mask file for signals
-        for idx, row in view.iterrows():
-            price = pd.to_numeric(row.get('CURRENT_RATE', row.get('Rate')), errors='coerce')
-
-            # Skip rows where price is not a valid number
-            if pd.isna(price):
-                continue
-
-            # Read buy/sell signals from the precomputed mask columns.
-            # Fall back to False if the expected column is absent in the file.
-            buy_signal  = bool(view_masks.loc[idx, 'PHI_OOS_DOWN']) if 'PHI_OOS_DOWN' in view_masks.columns else False
-            sell_signal = bool(view_masks.loc[idx, 'PHI_OOS_UP'])   if 'PHI_OOS_UP'   in view_masks.columns else False
-
-            # Toggles gate whether each signal actually triggers a trade
-            buy_enabled  = 'PHI_OOS_DOWN' in active_masks
-            sell_enabled = 'PHI_OOS_UP'   in active_masks
-
-            # Check for BUY edge transition (False → True)
-            if buy_enabled and not prev_buy_state and buy_signal and position == 'USD' and usd > 0:
-                btc = usd / (price * (1.0 + FEE))
-                trades.append(('BUY', idx, price, usd, btc))
-                usd = 0.0
-                position = 'BTC'
-                self.debug_box.text = f"BUY at {price:.2f}"
-
-            # Check for SELL edge transition (False → True)
-            elif sell_enabled and not prev_sell_state and sell_signal and position == 'BTC' and btc > 0:
-                usd = btc * price * (1.0 - FEE)
-                trades.append(('SELL', idx, price, usd, btc))
-                btc = 0.0
-                position = 'USD'
-                self.debug_box.text = f"SELL at {price:.2f}"
-
-            # Update edge-detection state for the next iteration
-            prev_buy_state  = buy_signal
-            prev_sell_state = sell_signal
-
-        # 6. Force close any open BTC position at the last price
-        last_price = 0.0
-        if not view.empty:
-            last_price = pd.to_numeric(
-                view.iloc[-1].get('CURRENT_RATE', view.iloc[-1].get('Rate')), errors='coerce'
-            )
-            if pd.isna(last_price):
-                last_price = 0.0
-        if position == 'BTC' and btc > 0 and last_price > 0:
-            usd = btc * last_price * (1.0 - FEE)
-            trades.append(('SELL', len(view) - 1, last_price, usd, btc))
-            btc = 0.0
-            position = 'USD'
-            self.debug_box.text = f"Force SELL at {last_price:.2f}"
-
-        # 7. Calculate ROI and trade count
-        final_usd = usd + (btc * last_price if position == 'BTC' else 0)
-        roi = ((final_usd - 1000.0) / 1000.0) * 100 if final_usd != 1000.0 else 0.0
-        trade_pairs = len([t for t in trades if t[0] == 'SELL'])
-
-        # 8. Update metrics_label
+        # 4. Update metrics label (visualization mode — no trading)
         active_count = len(active_masks)
         self.metrics_label.text = (
-            f"TRADING RESULTS:\n"
-            f"ROI: {roi:.2f}%\n"
-            f"Trades: {trade_pairs}\n"
-            f"Final USD: ${final_usd:.2f}\n"
-            f"Position: {position}\n"
-            f"Active masks: {active_count}"
+            f"MASK VISUALIZATION:\n"
+            f"Active masks: {active_count}\n"
+            f"View rows: {len(view)}"
         )
 
-        # 9. Refresh base plot then overlay trade markers and mask signal dots
+        # 5. Refresh base plot then overlay mask signal dots for ALL active masks
         self.plot_all()
         x_vals = view['TIME']
 
-        # Trade markers: green up-triangle for BUY, red down-triangle for SELL
-        for trade in trades:
-            ttype, tidx, tprice, _, _ = trade
-            if ttype == 'BUY':
-                self.ax_price.scatter(x_vals.iloc[tidx], tprice, color='green', marker='^', s=50, zorder=10)
-            elif ttype == 'SELL':
-                self.ax_price.scatter(x_vals.iloc[tidx], tprice, color='red', marker='v', s=50, zorder=10)
+        # 6. Track which categories have been plotted for the legend
+        plotted_categories = set()
 
-        # Visual mask feedback: small dots wherever a mask signal is True.
-        # Lime dots = PHI_OOS_DOWN (buy) mask active; red dots = PHI_OOS_UP (sell) mask active.
-        # These confirm the mask file is aligned and help debug mask logic.
-        # (masks_df is guaranteed non-None here due to the early-return guard above)
-        if 'PHI_OOS_DOWN' in view_masks.columns:
-            buy_dots = view_masks[view_masks['PHI_OOS_DOWN']].index
-            for dot_idx in buy_dots:
-                self.ax_price.scatter(
-                    x_vals.iloc[dot_idx],
-                    view['CURRENT_RATE'].iloc[dot_idx],
-                    color='lime', s=20, marker='.', zorder=5, alpha=0.7
-                )
-        if 'PHI_OOS_UP' in view_masks.columns:
-            sell_dots = view_masks[view_masks['PHI_OOS_UP']].index
-            for dot_idx in sell_dots:
-                self.ax_price.scatter(
-                    x_vals.iloc[dot_idx],
-                    view['CURRENT_RATE'].iloc[dot_idx],
-                    color='red', s=20, marker='.', zorder=5, alpha=0.7
-                )
+        # 7. Colored dots for every active mask
+        for mask_name in active_masks:
+            if mask_name in view_masks.columns:
+                category = mask_to_category.get(mask_name)
+                if category and category in MASK_COLORS:
+                    color = MASK_COLORS[category]
+                    plotted_categories.add(category)
+                    dot_indices = view_masks[view_masks[mask_name]].index
+                    for dot_idx in dot_indices:
+                        self.ax_price.scatter(
+                            x_vals.iloc[dot_idx],
+                            view['CURRENT_RATE'].iloc[dot_idx],
+                            color=color, s=15, marker='.', zorder=5, alpha=0.5
+                        )
 
-        # 10. Refresh canvas to display all new annotations
+        # 8. Add legend for active categories
+        if plotted_categories:
+            legend_elements = [Patch(facecolor=MASK_COLORS[cat], label=cat)
+                               for cat in plotted_categories]
+            self.ax_price.legend(handles=legend_elements, loc='upper right', fontsize='small')
+
+        # 9. Refresh canvas to display all new annotations
         self.canvas_widget.draw()
 
-        # Final summary in debug box
-        self.debug_box.text = f"Simulation complete: {len(trades)} trades, {active_count} masks active"
+        self.debug_box.text = f"Visualization: {active_count} masks active"
 
 
     def _try_load_default(self):
