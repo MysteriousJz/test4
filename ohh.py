@@ -650,8 +650,8 @@ class PrototypeUI(BoxLayout):
         # so callers can still read self.toggle_states directly
         self.toggle_states = self.mask_switchboard.toggle_states
 
-        # Holds the DataFrame loaded from the companion *_masks.feather file.
-        # None until a SQLite file is successfully loaded and a mask file is found.
+        # Holds the DataFrame loaded from the companion masks.sqlite file.
+        # None until a SQLite file is successfully loaded and masks.sqlite is found.
         self.masks_df = None
 
         Clock.schedule_once(lambda dt: self._try_load_default(), 0.1)
@@ -670,7 +670,7 @@ class PrototypeUI(BoxLayout):
         Execute trading simulation driven by active binary masks.
         BUY when PHI_OOS_DOWN mask is True AND its toggle is ON.
         SELL when PHI_OOS_UP mask is True AND its toggle is ON.
-        Signal values are read from the precomputed mask file (*_masks.feather),
+        Signal values are read from the precomputed mask file (masks.sqlite),
         not recalculated on the fly.  Updates metrics, plots trade markers and
         overlay dots for mask signals, then logs to debug box.
         """
@@ -847,17 +847,21 @@ class PrototypeUI(BoxLayout):
             self.status_label.text = f"Loaded: {path}"
             self.rows_label.text = f"Rows: {len(df)}"
 
-            # --- Load companion mask file (*_masks.feather) ---
-            # Safely strip the file extension and append _masks.feather so that
-            # extensions like .sqlite, .db (and any other variant) are handled
-            # correctly without risking false substring replacements.
-            base, _ = os.path.splitext(path)
-            mask_path = base + '_masks.feather'
+            # --- Load companion mask file (masks.sqlite) ---
+            # Look for masks.sqlite in the same directory as the indicator file.
+            mask_path = os.path.join(os.path.dirname(path), 'masks.sqlite')
             if os.path.exists(mask_path):
-                # Read the feather file produced by aa.py
-                self.masks_df = pd.read_feather(mask_path)
-                # aa.py may store the original row index as a column called 'index';
-                # restore it as the DataFrame index so iloc slicing stays aligned.
+                # Read all mask rows from the masks table in masks.sqlite.
+                # Use a context manager so the connection is always closed cleanly.
+                try:
+                    with sqlite3.connect(mask_path) as mask_conn:
+                        self.masks_df = pd.read_sql_query("SELECT * FROM masks", mask_conn)
+                except Exception:
+                    self.masks_df = None
+                    self.debug_box.text = "masks.sqlite found but 'masks' table missing"
+                    self.on_redraw_dots(None)
+                    return
+                # Restore stored row index if present so iloc slicing stays aligned
                 if 'index' in self.masks_df.columns:
                     self.masks_df = self.masks_df.set_index('index')
                 # Warn if the mask row count doesn't match the indicator row count
@@ -870,7 +874,7 @@ class PrototypeUI(BoxLayout):
                     # Report the number of mask columns that were loaded
                     self.debug_box.text = f"Loaded {len(self.masks_df.columns)} masks"
             else:
-                # No mask file next to the SQLite — user must run aa.py first
+                # No masks.sqlite found next to the indicator file
                 self.masks_df = None
                 self.debug_box.text = "No mask file found - run aa.py first"
             # --- end mask loading ---
