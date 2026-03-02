@@ -739,11 +739,11 @@ class PrototypeUI(BoxLayout):
                 if category and category in MASK_COLORS:
                     color = MASK_COLORS[category]
                     plotted_categories.add(category)
-                    dot_indices = view_masks[view_masks[mask_name]].index
-                    for dot_idx in dot_indices:
+                    mask_bool = view_masks[mask_name].fillna(0).astype(bool)
+                    if mask_bool.any():
                         self.ax_price.scatter(
-                            x_vals.iloc[dot_idx],
-                            view['CURRENT_RATE'].iloc[dot_idx],
+                            x_vals[mask_bool].values,
+                            view['CURRENT_RATE'][mask_bool].values,
                             color=color, s=15, marker='.', zorder=5, alpha=0.5
                         )
 
