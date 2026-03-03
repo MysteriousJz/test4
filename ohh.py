@@ -712,6 +712,14 @@ class PrototypeUI(BoxLayout):
         self.metrics_label = Label(text='Metrics:\nAvg User ROI: N/A\n\nVisible Avg Price: N/A\n0.61% of Avg: N/A', size_hint_y=None, height=120)
         lc.add_widget(self.metrics_label)
 
+        # Scrollable trade log (populated by run_strategy)
+        lc.add_widget(Label(text='[b]Trade Log[/b]', markup=True, size_hint_y=None, height=20))
+        self.trade_log = ScrollView(size_hint_y=None, height=200)
+        self.trade_log_container = GridLayout(cols=1, size_hint_y=None, spacing=2)
+        self.trade_log_container.bind(minimum_height=self.trade_log_container.setter('height'))
+        self.trade_log.add_widget(self.trade_log_container)
+        lc.add_widget(self.trade_log)
+
         left.clear_widgets(); left.add_widget(lc); self.add_widget(left)
 
         # Right plots
@@ -890,13 +898,13 @@ class PrototypeUI(BoxLayout):
                 else:
                     sell_counts += col
 
-        # --- Step 2: peak detection — highest value in a 60-bar (2-minute) rolling window ---
-        window = 60
-        rolling_max_buy = buy_counts.rolling(window, min_periods=window // 2).max()
-        rolling_max_sell = sell_counts.rolling(window, min_periods=window // 2).max()
-        # A peak fires when the count equals the rolling maximum and is at least 1
-        buy_peak = (buy_counts == rolling_max_buy) & (buy_counts >= 1)
-        sell_peak = (sell_counts == rolling_max_sell) & (sell_counts >= 1)
+        # --- Step 2: peak detection — first bar where count reaches a new 60-bar high ---
+        # The rising-edge condition (> shift(1)) ensures only the START of a new peak fires,
+        # preventing duplicate signals across a plateau.
+        rolling_max_buy = buy_counts.rolling(60, min_periods=30).max()
+        rolling_max_sell = sell_counts.rolling(60, min_periods=30).max()
+        buy_peak = (buy_counts == rolling_max_buy) & (buy_counts > buy_counts.shift(1).fillna(0))
+        sell_peak = (sell_counts == rolling_max_sell) & (sell_counts > sell_counts.shift(1).fillna(0))
 
         # --- Step 3: trade execution ---
         usd = 1000.0
@@ -985,6 +993,40 @@ class PrototypeUI(BoxLayout):
             f"Final: ${final_usd:.2f}"
         )
         self.debug_box.text = f"Strategy: {len(trades)} signals, ROI={roi:.2f}%"
+
+        # --- Step 6: populate trade log ---
+        self.trade_log_container.clear_widgets()
+        # Calculate pair profits first so we can annotate each SELL
+        pair_profits = {}
+        pair_num = 0
+        for k in range(len(trades) - 1):
+            if trades[k][0] == 'BUY' and trades[k + 1][0] == 'SELL':
+                buy_price = trades[k][2]
+                sell_price = trades[k + 1][2]
+                profit_pct = ((sell_price - buy_price) / buy_price) * 100
+                pair_num += 1
+                pair_profits[k + 1] = (pair_num, profit_pct)
+
+        wins = sum(1 for _, pct in pair_profits.values() if pct > 0)
+        total_pairs = len(pair_profits)
+        win_rate = (wins / total_pairs * 100) if total_pairs > 0 else 0.0
+
+        summary = Label(
+            text=f"Pairs: {total_pairs}  Wins: {wins}  Win%: {win_rate:.0f}%",
+            size_hint_y=None, height=20, font_size=11,
+        )
+        self.trade_log_container.add_widget(summary)
+
+        for j, trade in enumerate(trades):
+            if trade[0] == 'BUY':
+                detail = f"USD ${trade[3]:.2f} → BTC {trade[4]:.6f}"
+            else:
+                pp = pair_profits.get(j)
+                pnl = f"  P&L: {pp[1]:+.2f}%" if pp else ""
+                detail = f"BTC {trade[4]:.6f} → USD ${trade[3]:.2f}{pnl}"
+            trade_text = f"{j + 1}. {trade[0]} bar {trade[1]} @ ${trade[2]:.2f} | {detail}"
+            row_lbl = Label(text=trade_text, size_hint_y=None, height=18, font_size=10)
+            self.trade_log_container.add_widget(row_lbl)
 
     def _try_load_default(self):
         try:
