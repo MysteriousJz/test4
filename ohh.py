@@ -716,7 +716,7 @@ class PrototypeUI(BoxLayout):
 
         # Right plots
         right = BoxLayout(orientation='vertical')
-        self.fig, (self.ax_price, self.ax_crap, self.ax_rsi, self.ax_theta) = plt.subplots(4, 1, sharex=True, figsize=(12, 8), gridspec_kw={'height_ratios': [3, 1, 1, 1]})
+        self.fig, (self.ax_price, self.ax_buy, self.ax_sell) = plt.subplots(3, 1, sharex=True, figsize=(12, 8), gridspec_kw={'height_ratios': [3, 1, 1]})
         self.canvas_widget = FigureCanvasKivyAgg(self.fig)
         right.add_widget(self.canvas_widget)
         self.add_widget(right)
@@ -818,80 +818,7 @@ class PrototypeUI(BoxLayout):
                             color=color, s=15, marker='.', zorder=5, alpha=0.5
                         )
 
-        # 8a. Heat map: semi-transparent background glow showing buy/sell intensity.
-        #     For each row we count how many active buy masks vs sell masks are True,
-        #     then shade the chart background green (more buys) or red (more sells).
-        #     Contiguous same-sign runs are grouped so fill_between is called once
-        #     per segment, keeping matplotlib overhead low.
-        buy_counts = pd.Series(0, index=view_masks.index)
-        sell_counts = pd.Series(0, index=view_masks.index)
-        for mask_name in active_masks:
-            if mask_name in view_masks.columns:
-                col = view_masks[mask_name].fillna(0).astype(int)
-                if mask_name in BUY_MASKS:
-                    buy_counts += col
-                else:
-                    sell_counts += col
-        net_signal = buy_counts - sell_counts
-        max_intensity = net_signal.abs().max()
-        if max_intensity > 0:
-            ymin, ymax = self.ax_price.get_ylim()
-            t_arr = x_vals.values  # TIME array — same dtype as the price line's x-axis
-            n = len(net_signal)
-            i = 0
-            while i < n:
-                val = net_signal.iloc[i]
-                if val == 0:
-                    i += 1
-                    continue
-                sign = 1 if val > 0 else -1
-                j = i
-                # Advance j to end of contiguous same-sign run
-                while j < n and net_signal.iloc[j] != 0 and ((net_signal.iloc[j] > 0) == (sign > 0)):
-                    j += 1
-                # Alpha linearly scales over [0.05, 0.25] with segment intensity
-                seg_alpha = float(net_signal.iloc[i:j].abs().mean()) / float(max_intensity)
-                alpha = 0.05 + 0.2 * seg_alpha
-                hm_color = 'green' if sign > 0 else 'red'
-                self.ax_price.fill_between(
-                    t_arr[i:j], ymin, ymax,
-                    color=hm_color, alpha=alpha, zorder=1
-                )
-                i = j
-
-        # 8b. Signal count bars: quantitative display of buy/sell pressure.
-        #     buy_counts / sell_counts accumulated in step 8a are reused here.
-        #     One bar() call per colour (vectorised) keeps performance O(1) in matplotlib.
-        #     Bars are anchored at a baseline 2% below visible price_min; tallest bar
-        #     reaches 5% of price range so they stay compact yet readable.
-        if buy_counts.any() or sell_counts.any():
-            price_min, price_max = self.ax_price.get_ylim()
-            price_range = price_max - price_min
-            baseline = price_min - price_range * 0.02
-            max_signal = max(int(buy_counts.max()), int(sell_counts.max()), 1)
-            scale = price_range * 0.05 / max_signal  # tallest bar = 5% of price range
-            x_pos = x_vals.values
-            if len(x_pos) > 1:
-                bar_width = (x_pos[1] - x_pos[0]) * 0.6
-            else:
-                xlim = self.ax_price.get_xlim()
-                bar_width = (xlim[1] - xlim[0]) * 0.005
-            # Green upward bars — height proportional to buy signal count
-            if buy_counts.any():
-                self.ax_price.bar(
-                    x_pos, buy_counts.values * scale, bottom=baseline,
-                    width=bar_width, color='green', alpha=0.35, zorder=3
-                )
-            # Red downward bars — depth proportional to sell signal count
-            if sell_counts.any():
-                self.ax_price.bar(
-                    x_pos, -(sell_counts.values * scale), bottom=baseline,
-                    width=bar_width, color='red', alpha=0.35, zorder=3
-                )
-            # Expand y-axis downward so bars are fully visible below the price line
-            self.ax_price.set_ylim(bottom=baseline - price_range * 0.02)
-
-        # 8c. Add legend for buy/sell signal types
+        # 8. Add legend for buy/sell signal types
         legend_elements = []
         if plotted_buy:
             legend_elements.append(Patch(facecolor="#228B22", label="Buy Signals"))
@@ -963,10 +890,13 @@ class PrototypeUI(BoxLayout):
                 else:
                     sell_counts += col
 
-        # --- Step 2: peak detection (local maxima) ---
-        # A peak is strictly greater than both its immediate neighbours.
-        buy_peak = (buy_counts > buy_counts.shift(1)) & (buy_counts > buy_counts.shift(-1))
-        sell_peak = (sell_counts > sell_counts.shift(1)) & (sell_counts > sell_counts.shift(-1))
+        # --- Step 2: peak detection — highest value in a 60-bar (2-minute) rolling window ---
+        window = 60
+        rolling_max_buy = buy_counts.rolling(window, min_periods=window // 2).max()
+        rolling_max_sell = sell_counts.rolling(window, min_periods=window // 2).max()
+        # A peak fires when the count equals the rolling maximum and is at least 1
+        buy_peak = (buy_counts == rolling_max_buy) & (buy_counts >= 1)
+        sell_peak = (sell_counts == rolling_max_sell) & (sell_counts >= 1)
 
         # --- Step 3: trade execution ---
         usd = 1000.0
@@ -1022,44 +952,6 @@ class PrototypeUI(BoxLayout):
                             view['CURRENT_RATE'][mask_bool].values,
                             color=color, s=15, marker='.', zorder=5, alpha=0.5
                         )
-
-        # Heat-map background glow
-        net_signal = buy_counts - sell_counts
-        max_intensity = net_signal.abs().max()
-        if max_intensity > 0:
-            ymin, ymax = self.ax_price.get_ylim()
-            t_arr = x_vals.values
-            n = len(net_signal)
-            i = 0
-            while i < n:
-                val = net_signal.iloc[i]
-                if val == 0:
-                    i += 1
-                    continue
-                sign = 1 if val > 0 else -1
-                j = i
-                while j < n and net_signal.iloc[j] != 0 and ((net_signal.iloc[j] > 0) == (sign > 0)):
-                    j += 1
-                seg_alpha = float(net_signal.iloc[i:j].abs().mean()) / float(max_intensity)
-                alpha = 0.05 + 0.2 * seg_alpha
-                hm_color = 'green' if sign > 0 else 'red'
-                self.ax_price.fill_between(t_arr[i:j], ymin, ymax, color=hm_color, alpha=alpha, zorder=1)
-                i = j
-
-        # Signal count bars
-        if buy_counts.any() or sell_counts.any():
-            price_min, price_max = self.ax_price.get_ylim()
-            price_range = price_max - price_min
-            baseline = price_min - price_range * 0.02
-            max_signal = max(int(buy_counts.max()), int(sell_counts.max()), 1)
-            scale = price_range * 0.05 / max_signal
-            x_pos = x_vals.values
-            bar_width = (x_pos[1] - x_pos[0]) * 0.6 if len(x_pos) > 1 else (self.ax_price.get_xlim()[1] - self.ax_price.get_xlim()[0]) * 0.005
-            if buy_counts.any():
-                self.ax_price.bar(x_pos, buy_counts.values * scale, bottom=baseline, width=bar_width, color='green', alpha=0.35, zorder=3)
-            if sell_counts.any():
-                self.ax_price.bar(x_pos, -(sell_counts.values * scale), bottom=baseline, width=bar_width, color='red', alpha=0.35, zorder=3)
-            self.ax_price.set_ylim(bottom=baseline - price_range * 0.02)
 
         # Legend for mask signal types
         legend_elements = []
@@ -1246,7 +1138,7 @@ class PrototypeUI(BoxLayout):
 
 
         # clear axes
-        self.ax_price.clear(); self.ax_crap.clear(); self.ax_rsi.clear(); self.ax_theta.clear()
+        self.ax_price.clear(); self.ax_buy.clear(); self.ax_sell.clear()
 
         # FIXED: UPDATED COLORS FOR BOLLINGER BANDS - More visible, progressive blues
         CLOUD_COLORS = [
@@ -1314,123 +1206,50 @@ class PrototypeUI(BoxLayout):
 
         self.ax_price.set_ylabel('Price'); self.ax_price.grid(True)
 
-        # CRAP panel (2nd panel) - FIXED: REGULAR LINE PLOTS, NO STEP, NO FLAG SHADING
-        self.ax_crap.clear()
-        CRAP_COLORS = {'CRAP_5_7': 'indigo', 'CRAP_9_2': 'violet', 'CRAP_14_8': 'darkorange', 'CRAP_24': 'gold'}
-        crap_lines = []
-        for col, color in CRAP_COLORS.items():
-            if col in view.columns:
-                vals = pd.to_numeric(view[col], errors='coerce')
-                if not vals.isna().all():
-                    line, = self.ax_crap.plot(x, vals, color=color, linewidth=1.2, label=col)
-                    crap_lines.append(line)
-        # FIXED: ADD THRESHOLD LINES - solid black at 0, green/red dotted at extremes
-        self.ax_crap.axhline(0, color='black', linestyle='-', linewidth=1.0, alpha=0.8)
-        self.ax_crap.axhline(-0.003105620015142, color='green', linestyle=':', linewidth=1.0, alpha=0.8)
-        self.ax_crap.axhline(0.003105620015142, color='red', linestyle=':', linewidth=1.0, alpha=0.8)
-        self.ax_crap.set_ylabel('CRAP'); self.ax_crap.set_yticks([])
-
-        # RSI panel (3rd panel) - UPDATED TO PLOT ACTUAL RSI VALUES AS LINES
-        self.ax_rsi.clear()
-        xvals = np.array(x)
-        rsi_lines = []
-        if 'RSI_21' in view.columns:
-            vals = pd.to_numeric(view['RSI_21'], errors='coerce')
-            if not vals.isna().all():
-                line, = self.ax_rsi.plot(xvals, vals, color='blue', linewidth=1.2, label='RSI_21')
-                rsi_lines.append(line)
-        if 'RSI_34' in view.columns:
-            vals = pd.to_numeric(view['RSI_34'], errors='coerce')
-            if not vals.isna().all():
-                line, = self.ax_rsi.plot(xvals, vals, color='orange', linewidth=1.2, label='RSI_34')
-                rsi_lines.append(line)
-        self.ax_rsi.set_ylim(0, 100)
-        self.ax_rsi.axhline(9.01, color='green', linestyle='--', linewidth=0.5, alpha=0.5)
-        self.ax_rsi.axhline(89.99, color='red', linestyle='--', linewidth=0.5, alpha=0.5)
-        # FIXED: RSI shading based on BOTH RSI_21 and RSI_34 being extreme
-        if 'RSI_21' in view.columns and 'RSI_34' in view.columns:
-            rsi21 = pd.to_numeric(view['RSI_21'], errors='coerce')
-            rsi34 = pd.to_numeric(view['RSI_34'], errors='coerce')
-            # Green when BOTH are below 9.01, red when BOTH are above 89.99
-            low_mask = (~rsi21.isna()) & (~rsi34.isna()) & (rsi21 < 9.01) & (rsi34 < 9.01)
-            high_mask = (~rsi21.isna()) & (~rsi34.isna()) & (rsi21 > 89.99) & (rsi34 > 89.99)
-            if low_mask.any():
-                spans_low = spans_from_mask(low_mask, xvals)
-                if spans_low:
-                    self.ax_rsi.broken_barh(spans_low, (0-0.4,0.8), facecolors='green', edgecolors='k', zorder=1, alpha=0.3)
-            if high_mask.any():
-                spans_high = spans_from_mask(high_mask, xvals)
-                if spans_high:
-                    self.ax_rsi.broken_barh(spans_high, (0-0.4,0.8), facecolors='red', edgecolors='k', zorder=1, alpha=0.3)
-        self.ax_rsi.set_ylabel('RSI'); self.ax_rsi.set_yticks([])
-
-        # THETA panel (4th panel)
-        # prepare theta history so long windows have enough prior points
-        maxw = max(LR_WINDOWS)
-        # Theta / VAL color map (ordered by window size in LR_WINDOWS)
-        VAL_COLORS = {
-            144: 'indigo',       # shortest
-            233: 'violet',
-            377: 'darkorange',
-            610: 'gold'          # longest (most prominent)
+        # Buy/Sell count panels — plot active mask counts with Fibonacci rolling averages.
+        # If mask data is not yet loaded, the panels render empty with correct labels/grid.
+        BUY_MASKS_SET = {
+            "PHI_OOS_DOWN", "PHI_CROSS_UP", "PHI_TREND_UP",
+            "BOOL_STD_D1", "BOOL_STD_D2", "BOOL_STD_D3",
+            "CRAP5_7_D", "CRAP9_2_D", "CRAP14_8_D", "CRAP24_D",
+            "CRAP5_7_TROUGH", "CRAP9_2_TROUGH", "CRAP14_8_TROUGH", "CRAP24_TROUGH",
+            "CRAP5_7_MU", "CRAP9_2_MU", "CRAP14_8_MU", "CRAP24_MU",
+            "RSI_OVERSOLD", "THETA_BUY",
         }
-        # theta labels mapping (SHORT, MEDIUM, LONG, X-LONG)
-        THETA_LABELS = {144: 'Short', 233: 'Medium', 377: 'Long', 610: 'X-Long'}
-        start_for_theta = max(0, s - maxw + 1)
-        prices_for_theta = pd.to_numeric(self.df.iloc[start_for_theta:e][price_col], errors='coerce').to_numpy()
-        thetas = compute_theta_series(prices_for_theta, windows=LR_WINDOWS)
+        if self.masks_df is not None:
+            view_masks_pa = self.masks_df.iloc[s:e].reset_index(drop=True)
+            if len(view_masks_pa) == len(view):
+                active_masks_pa = set(self.mask_switchboard.get_active_masks())
+                buy_counts_pa = pd.Series(0, index=view_masks_pa.index, dtype=float)
+                sell_counts_pa = pd.Series(0, index=view_masks_pa.index, dtype=float)
+                for mask_name in active_masks_pa:
+                    if mask_name in view_masks_pa.columns:
+                        col = view_masks_pa[mask_name].fillna(0).astype(int)
+                        if mask_name in BUY_MASKS_SET:
+                            buy_counts_pa += col
+                        else:
+                            sell_counts_pa += col
 
-        # make theta subplot visible and plot lines
-        self.ax_theta.set_visible(True); self.ax_theta.clear()
-        self.ax_theta.set_ylim(-90,90); self.ax_theta.set_ylabel('Theta (deg)')
-        x_arr = np.asarray(x)
-        offset = s - start_for_theta
-        theta_lines=[]
-        for w in LR_WINDOWS:
-            arr_full = thetas.get(w, np.full(len(prices_for_theta), np.nan))
-            vis = arr_full[offset: offset + len(prices)]
-            if len(vis) < len(prices):
-                vis = np.concatenate([vis, np.full(len(prices)-len(vis), np.nan)])
-            view[f"theta{w}"] = vis
-            color = VAL_COLORS.get(w, 'tab:blue')
-            line, = self.ax_theta.plot(x_arr, vis, color=color, linewidth=1.2, label=THETA_LABELS.get(w, f'theta{w}'))
-            theta_lines.append(line)
-        # FIXED: CORRECTED THRESHOLDS - Red at +9.01°, Green at -9.01°
-        self.ax_theta.axhline(9.01, color='red', linestyle='--', linewidth=0.8)
-        self.ax_theta.axhline(-9.01, color='green', linestyle='--', linewidth=0.8)
+                # Panel A: Buy signal counts
+                self.ax_buy.plot(x, buy_counts_pa.values, color='darkgreen', linewidth=1.5, label='Buy Count')
+                for period, color in [(55, '#90EE90'), (34, '#32CD32'), (21, '#228B22'), (13, '#006400')]:
+                    if len(buy_counts_pa) >= period // 2:
+                        ma = buy_counts_pa.rolling(period, min_periods=period // 2).mean()
+                        self.ax_buy.plot(x, ma.values, color=color, linewidth=1, alpha=0.7, label=f'{period}-MA')
 
-        # Build masks: four cases (above/below) × (increasing/decreasing across windows)
-        vals_matrix = np.vstack([view[f"theta{w}"].to_numpy(dtype=float) for w in LR_WINDOWS]).T  # shape (N,4) order: [144,233,377,610]
-        finite = np.isfinite(vals_matrix).all(axis=1)
-        above = finite & (vals_matrix.min(axis=1) >= POS_THETA_DEG)
-        below = finite & (vals_matrix.max(axis=1) <= NEG_THETA_DEG)
-        inc = np.all(np.diff(vals_matrix, axis=1) > 0, axis=1)   # strictly increasing across windows (144->610)
-        dec = np.all(np.diff(vals_matrix, axis=1) < 0, axis=1)   # strictly decreasing across windows
+                # Panel B: Sell signal counts
+                self.ax_sell.plot(x, sell_counts_pa.values, color='darkred', linewidth=1.5, label='Sell Count')
+                for period, color in [(55, '#F08080'), (34, '#FA8072'), (21, '#FF6347'), (13, '#B22222')]:
+                    if len(sell_counts_pa) >= period // 2:
+                        ma = sell_counts_pa.rolling(period, min_periods=period // 2).mean()
+                        self.ax_sell.plot(x, ma.values, color=color, linewidth=1, alpha=0.7, label=f'{period}-MA')
 
-        m_above_inc = above & inc
-        m_above_dec = above & dec
-        m_below_inc = below & inc
-        m_below_dec = below & dec
-
-        # helper to shade contiguous spans on theta axis
-        def shade_mask(mask, color, alpha=0.12):
-            spans = spans_from_mask(mask, x_arr)
-            for xs,wid in spans:
-                try: self.ax_theta.axvspan(xs, xs+wid, color=color, alpha=alpha, zorder=1)
-                except Exception: pass
-
-        shade_mask(m_above_inc, 'salmon', 0.18)   # ABOVE + increasing (610 greatest)
-        shade_mask(m_above_dec, 'red', 0.12)  # ABOVE + decreasing
-        shade_mask(m_below_inc, 'lime', 0.18) # BELOW + increasing
-        shade_mask(m_below_dec, 'green', 0.12)    # BELOW + decreasing
-
-        # legend for theta
-        try:
-            if theta_lines:
-                labels = [ln.get_label() for ln in theta_lines]
-                self.ax_theta.legend(theta_lines, labels, loc='upper left', fontsize='small')
-        except Exception:
-            pass
+        self.ax_buy.set_ylabel('Buy Count')
+        self.ax_buy.legend(loc='upper left', fontsize='x-small')
+        self.ax_buy.grid(True, alpha=0.3)
+        self.ax_sell.set_ylabel('Sell Count')
+        self.ax_sell.legend(loc='upper left', fontsize='x-small')
+        self.ax_sell.grid(True, alpha=0.3)
 
         # Metrics text formatting (clean)
         try:
