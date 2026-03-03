@@ -40,6 +40,13 @@ NEG_THETA_DEG = -9.01  # CORRECTED: Changed from -23.6 to -9.01
 DEBOUNCE_TICKS = 1 #maybe unused
 FEE = 0.0025 #starter fee
 PROFIT_TARGET_PCT = 0.6  # auto-sell profit target in percent
+# Fibonacci rolling-window lengths used for buy/sell peak detection.
+# A "peak" bar is when the mask-count reaches its highest value in this many bars.
+# 55 (buy) and 89 (sell) are consecutive Fibonacci numbers chosen so buy signals
+# look back over a slightly tighter horizon, keeping entries responsive, while sell
+# signals use a wider horizon to avoid premature exits.
+BUY_PEAK_WINDOW  = 55   # bars looked back to confirm a buy-count peak
+SELL_PEAK_WINDOW = 89   # bars looked back to confirm a sell-count peak
 BUY_MARKER='s'; SELL_MARKER='o'
 PRICE_COLOR='#000000'
 
@@ -709,9 +716,16 @@ class PrototypeUI(BoxLayout):
         sim_button.bind(on_press=self.on_run_button)
         lc.add_widget(sim_button)
 
-        # Metrics
+        # Metrics — shows avg-user ROI and visible price stats; updated by plot_all().
+        # This label is intentionally NEVER overwritten by the strategy runner so that
+        # the "average user context" numbers remain visible alongside trade results.
         self.metrics_label = Label(text='Metrics:\nAvg User ROI: N/A\n\nVisible Avg Price: N/A\n0.61% of Avg: N/A', size_hint_y=None, height=120)
         lc.add_widget(self.metrics_label)
+
+        # Strategy stats — populated only when Strategy mode runs.
+        # Kept separate from metrics_label so avg-user numbers are never hidden.
+        self.strategy_stats_label = Label(text='Strategy: (not run yet)', size_hint_y=None, height=60)
+        lc.add_widget(self.strategy_stats_label)
 
         # Scrollable trade log (populated by run_strategy)
         lc.add_widget(Label(text='[b]Trade Log[/b]', markup=True, size_hint_y=None, height=20))
@@ -794,23 +808,15 @@ class PrototypeUI(BoxLayout):
             "RSI_OVERSOLD", "THETA_BUY",
         }
 
-        # 4. Update metrics label (visualization mode — no trading)
-        active_count = len(active_masks)
-        self.metrics_label.text = (
-            f"MASK VISUALIZATION:\n"
-            f"Active masks: {active_count}\n"
-            f"View rows: {len(view)}"
-        )
-
-        # 5. Refresh base plot then overlay mask signal dots for ALL active masks
+        # 4. Refresh base plot — this also updates metrics_label with avg-user ROI/price stats
         self.plot_all()
         x_vals = view['TIME']
 
-        # 6. Track buy/sell signal types plotted for the legend
+        # 5. Track buy/sell signal types plotted for the legend
         plotted_buy = False
         plotted_sell = False
 
-        # 7. Colored dots for every active mask
+        # 6. Colored dots for every active mask
         for mask_name in active_masks:
             if mask_name in view_masks.columns:
                 color = MASK_COLORS.get(mask_name)
@@ -827,7 +833,7 @@ class PrototypeUI(BoxLayout):
                             color=color, s=15, marker='.', zorder=5, alpha=0.5
                         )
 
-        # 8. Add legend for buy/sell signal types
+        # 7. Add legend for buy/sell signal types
         legend_elements = []
         if plotted_buy:
             legend_elements.append(Patch(facecolor="#228B22", label="Buy Signals"))
@@ -836,7 +842,7 @@ class PrototypeUI(BoxLayout):
         if legend_elements:
             self.ax_price.legend(handles=legend_elements, loc='upper right', fontsize='small')
 
-        # 9. Refresh canvas to display all new annotations
+        # 8. Refresh canvas to display all new annotations
         self.canvas_widget.draw()
 
         self.debug_box.text = f"Visualization: {active_count} masks active"
@@ -899,12 +905,20 @@ class PrototypeUI(BoxLayout):
                 else:
                     sell_counts += col
 
-        # --- Step 2: peak detection — first bar where count reaches a new 60-bar high ---
-        # The rising-edge condition (> shift(1)) ensures only the START of a new peak fires,
-        # preventing duplicate signals across a plateau.
-        rolling_max_buy = buy_counts.rolling(60, min_periods=30).max()
-        rolling_max_sell = sell_counts.rolling(60, min_periods=30).max()
-        buy_peak = (buy_counts == rolling_max_buy) & (buy_counts > buy_counts.shift(1).fillna(0))
+        # --- Step 2: peak detection — first bar where count reaches a new local high ---
+        # We use two different Fibonacci look-back windows:
+        #   BUY_PEAK_WINDOW  (55 bars) for buy peaks  — tighter horizon keeps entries responsive
+        #   SELL_PEAK_WINDOW (89 bars) for sell peaks — wider horizon avoids premature exits
+        #
+        # How it works:
+        #   rolling().max() computes the highest count seen in the last N bars.
+        #   A peak fires when the current bar EQUALS that rolling high AND is strictly
+        #   greater than the previous bar (rising-edge condition).  The rising-edge check
+        #   means only the very FIRST bar of a plateau triggers a trade, not every bar
+        #   that stays at the plateau level.
+        rolling_max_buy  = buy_counts.rolling(BUY_PEAK_WINDOW,  min_periods=BUY_PEAK_WINDOW  // 2).max()
+        rolling_max_sell = sell_counts.rolling(SELL_PEAK_WINDOW, min_periods=SELL_PEAK_WINDOW // 2).max()
+        buy_peak  = (buy_counts  == rolling_max_buy)  & (buy_counts  > buy_counts.shift(1).fillna(0))
         sell_peak = (sell_counts == rolling_max_sell) & (sell_counts > sell_counts.shift(1).fillna(0))
 
         # --- Step 3: trade execution ---
@@ -915,55 +929,108 @@ class PrototypeUI(BoxLayout):
 
         x_vals = view['TIME']
 
-        # PHI_OOS column availability — checked once, outside the trade loop
+        # PHI_OOS column availability — checked once, outside the trade loop.
+        # PHI_OOS (out-of-sample confirmation) is an independent signal computed on
+        # data the other indicators have NOT seen.  Requiring it as a gate keeps us
+        # from trading on in-sample noise.
         has_phi_oos_down = 'PHI_OOS_DOWN' in view_masks.columns
         has_phi_oos_up   = 'PHI_OOS_UP'   in view_masks.columns
 
-        # Patience filter — avoid buying at exact capitulation lows.
-        # Uses a 60-bar rolling minimum (each bar is ~2 seconds, so 60 bars ≈ 2 minutes).
-        # confirmed_exit_from_low is True when price was at a rolling low 1–2 bars ago
-        # and has now moved above it, confirming the low is behind us.
+        # ── Patience filter ───────────────────────────────────────────────────────
+        # Goal: never buy at the EXACT bottom of a 2-minute (60-bar) capitulation dip.
+        #
+        # Why?  When price is at its rolling minimum it is still FALLING — the low
+        # has not been confirmed yet.  We want to wait 1-2 bars until the price has
+        # started to recover before committing capital.
+        #
+        # How:
+        #   price_rolling_min  — the lowest price seen in any of the last 60 bars.
+        #   at_2min_low        — True on any bar where the current price IS that low.
+        #   low_occurred_recently — True when a low was present 1 or 2 bars AGO
+        #                           (shift(1) moves the window back so the current bar
+        #                            is never counted as "recently past").
+        #   confirmed_exit_from_low — True when BOTH conditions hold:
+        #       1. We are NOT currently at the rolling low  (price has moved up)
+        #       2. A low WAS present 1-2 bars ago           (the dip just happened)
+        #   Only bars where confirmed_exit_from_low is True are allowed to buy.
         price_rolling_min = view['CURRENT_RATE'].rolling(60, min_periods=30).min()
         at_2min_low = (view['CURRENT_RATE'] == price_rolling_min)
         low_occurred_recently = at_2min_low.rolling(2).max().shift(1).fillna(False).astype(bool)
         confirmed_exit_from_low = (~at_2min_low) & low_occurred_recently
 
-        avg_buy_price = None  # entry price used by the +0.6% profit-target check
+        # avg_buy_price tracks the price we paid on entry.
+        # Used exclusively by the profit-target check — reset to None when flat.
+        avg_buy_price = None
 
+        # ── Main trade loop ───────────────────────────────────────────────────────
+        # Each bar (i) we:
+        #   1. Read the current price and active mask counts.
+        #   2. Combine the peak-detection signal with the PHI_OOS gate.
+        #   3. Check the profit target FIRST (fast path — exits immediately).
+        #   4. Otherwise check the buy or sell condition (signal-driven path).
         for i in range(len(view)):
             price = float(view.loc[i, 'CURRENT_RATE'])
-            current_buy_count = buy_counts.iloc[i]
+
+            # Total number of BUY-side masks that are True on this bar.
+            current_buy_count  = buy_counts.iloc[i]
+            # Total number of SELL-side masks that are True on this bar.
             current_sell_count = sell_counts.iloc[i]
 
-            # PHI_OOS confirmation — only trade when out-of-sample signal agrees
+            # Read the out-of-sample confirmation flags for this bar.
+            # PHI_OOS_DOWN  → OOS model says market is trending DOWN  (buy dip signal)
+            # PHI_OOS_UP    → OOS model says market is trending UP     (sell peak signal)
+            # If the column doesn't exist in the mask file, default to False so trades
+            # are suppressed rather than accidentally firing on every bar.
             phi_oos_down = bool(view_masks['PHI_OOS_DOWN'].iloc[i]) if has_phi_oos_down else False
             phi_oos_up   = bool(view_masks['PHI_OOS_UP'].iloc[i])   if has_phi_oos_up   else False
 
+            # Final composite signals.
+            # buy_signal  = "buy-count just hit a Fibonacci-window peak"
+            #               AND "OOS model confirms a downtrend dip to buy into"
+            # sell_signal = "sell-count just hit a Fibonacci-window peak"
+            #               AND "OOS model confirms an uptrend peak to sell into"
             buy_signal  = buy_peak.iloc[i]  and phi_oos_down
             sell_signal = sell_peak.iloc[i] and phi_oos_up
 
-            # Profit target — auto-sell at +PROFIT_TARGET_PCT% gain, checked before normal sell logic
+            # ── PRIORITY 1: profit target ─────────────────────────────────────────
+            # Check this BEFORE the normal signal path so a profitable position is
+            # never held past the target just because no sell peak is firing.
+            # If we're in BTC and our unrealised gain has reached PROFIT_TARGET_PCT,
+            # sell immediately and skip the rest of this bar's logic (continue).
             if position == 'BTC' and btc > 0 and avg_buy_price is not None:
                 profit_pct = (price - avg_buy_price) / avg_buy_price * 100
                 if profit_pct >= PROFIT_TARGET_PCT:
+                    # Lock in the gain: convert BTC back to USD, deduct trading fee.
                     usd = btc * price * (1.0 - FEE)
                     trades.append(('SELL', i, price, usd, btc))
                     btc = 0.0
                     position = 'USD'
                     avg_buy_price = None
-                    continue
+                    continue  # move to next bar — no further action needed this bar
 
-            # Only buy when buys dominate or equal sells (no counter-trend longs)
-            # and price has confirmed an exit from the 2-min low (patience filter)
+            # ── PRIORITY 2: buy condition ─────────────────────────────────────────
+            # ALL of the following must be True to open a position:
+            #   buy_signal              — peak AND OOS confirmation (see above)
+            #   confirmed_exit_from_low — price just exited a rolling-low dip (patience)
+            #   position == 'USD'       — we must not already be in a position
+            #   usd > 0                 — we need money to spend
+            #   sell_count <= buy_count — buy-side masks DOMINATE (no counter-trend longs)
             if (buy_signal and confirmed_exit_from_low.iloc[i]
                     and position == 'USD' and usd > 0
                     and current_sell_count <= current_buy_count):
+                # Convert all USD to BTC, paying the taker fee on the way in.
                 btc = usd / (price * (1.0 + FEE))
                 trades.append(('BUY', i, price, usd, btc))
                 usd = 0.0
                 position = 'BTC'
-                avg_buy_price = price  # record entry for profit-target tracking
-            elif sell_signal and position == 'BTC' and btc > 0 and current_buy_count <= current_sell_count:  # sells dominate or equal
+                avg_buy_price = price  # remember entry price for profit-target tracking
+
+            # ── PRIORITY 3: signal-driven sell ───────────────────────────────────
+            # Fires when a sell peak is confirmed AND we hold BTC AND sell masks dominate.
+            # This is the "normal" exit path when the profit target hasn't been hit.
+            elif (sell_signal and position == 'BTC' and btc > 0
+                    and current_buy_count <= current_sell_count):
+                # Convert all BTC back to USD, paying the taker fee on the way out.
                 usd = btc * price * (1.0 - FEE)
                 trades.append(('SELL', i, price, usd, btc))
                 btc = 0.0
@@ -1030,11 +1097,10 @@ class PrototypeUI(BoxLayout):
 
         self.canvas_widget.draw()
 
-        self.metrics_label.text = (
-            f"STRATEGY MODE:\n"
-            f"ROI: {roi:.2f}%\n"
-            f"Buy Trades: {buy_trade_count}\n"
-            f"Final: ${final_usd:.2f}"
+        # Update the STRATEGY stats label (separate from metrics_label so that
+        # avg-user ROI / visible-price stats set by plot_all() are never hidden).
+        self.strategy_stats_label.text = (
+            f"Strategy ROI: {roi:.2f}%  |  Buys: {buy_trade_count}  |  Final: ${final_usd:.2f}"
         )
         self.debug_box.text = f"Strategy: {len(trades)} signals, ROI={roi:.2f}%"
 
