@@ -806,6 +806,47 @@ class PrototypeUI(BoxLayout):
                             color=color, s=15, marker='.', zorder=5, alpha=0.5
                         )
 
+        # 8a. Heat map: semi-transparent background glow showing buy/sell intensity.
+        #     For each row we count how many active buy masks vs sell masks are True,
+        #     then shade the chart background green (more buys) or red (more sells).
+        #     Contiguous same-sign runs are grouped so fill_between is called once
+        #     per segment, keeping matplotlib overhead low.
+        buy_counts = pd.Series(0, index=view_masks.index)
+        sell_counts = pd.Series(0, index=view_masks.index)
+        for mask_name in active_masks:
+            if mask_name in view_masks.columns:
+                col = view_masks[mask_name].fillna(0).astype(int)
+                if mask_name in BUY_MASKS:
+                    buy_counts += col
+                else:
+                    sell_counts += col
+        net_signal = buy_counts - sell_counts
+        max_intensity = net_signal.abs().max()
+        if max_intensity > 0:
+            ymin, ymax = self.ax_price.get_ylim()
+            t_arr = x_vals.values  # TIME array — same dtype as the price line's x-axis
+            n = len(net_signal)
+            i = 0
+            while i < n:
+                val = net_signal.iloc[i]
+                if val == 0:
+                    i += 1
+                    continue
+                sign = 1 if val > 0 else -1
+                j = i
+                # Advance j to end of contiguous same-sign run
+                while j < n and net_signal.iloc[j] != 0 and ((net_signal.iloc[j] > 0) == (sign > 0)):
+                    j += 1
+                # Alpha linearly scales over [0.05, 0.25] with segment intensity
+                seg_alpha = float(net_signal.iloc[i:j].abs().mean()) / float(max_intensity)
+                alpha = 0.05 + 0.2 * seg_alpha
+                hm_color = 'green' if sign > 0 else 'red'
+                self.ax_price.fill_between(
+                    t_arr[i:j], ymin, ymax,
+                    color=hm_color, alpha=alpha, zorder=1
+                )
+                i = j
+
         # 8. Add legend for buy/sell signal types
         legend_elements = []
         if plotted_buy:
