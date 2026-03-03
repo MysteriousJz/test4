@@ -847,7 +847,39 @@ class PrototypeUI(BoxLayout):
                 )
                 i = j
 
-        # 8. Add legend for buy/sell signal types
+        # 8b. Signal count bars: quantitative display of buy/sell pressure.
+        #     buy_counts / sell_counts accumulated in step 8a are reused here.
+        #     One bar() call per colour (vectorised) keeps performance O(1) in matplotlib.
+        #     Bars are anchored at a baseline 2% below visible price_min; tallest bar
+        #     reaches 5% of price range so they stay compact yet readable.
+        if buy_counts.any() or sell_counts.any():
+            price_min, price_max = self.ax_price.get_ylim()
+            price_range = price_max - price_min
+            baseline = price_min - price_range * 0.02
+            max_signal = max(int(buy_counts.max()), int(sell_counts.max()), 1)
+            scale = price_range * 0.05 / max_signal  # tallest bar = 5% of price range
+            x_pos = x_vals.values
+            if len(x_pos) > 1:
+                bar_width = (x_pos[1] - x_pos[0]) * 0.6
+            else:
+                xlim = self.ax_price.get_xlim()
+                bar_width = (xlim[1] - xlim[0]) * 0.005
+            # Green upward bars — height proportional to buy signal count
+            if buy_counts.any():
+                self.ax_price.bar(
+                    x_pos, buy_counts.values * scale, bottom=baseline,
+                    width=bar_width, color='green', alpha=0.35, zorder=3
+                )
+            # Red downward bars — depth proportional to sell signal count
+            if sell_counts.any():
+                self.ax_price.bar(
+                    x_pos, -(sell_counts.values * scale), bottom=baseline,
+                    width=bar_width, color='red', alpha=0.35, zorder=3
+                )
+            # Expand y-axis downward so bars are fully visible below the price line
+            self.ax_price.set_ylim(bottom=baseline - price_range * 0.02)
+
+        # 8c. Add legend for buy/sell signal types
         legend_elements = []
         if plotted_buy:
             legend_elements.append(Patch(facecolor="#228B22", label="Buy Signals"))
