@@ -13,6 +13,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.dates import DateFormatter, AutoDateFormatter, AutoDateLocator
 from matplotlib.patches import Patch
+from matplotlib.lines import Line2D
 
 # Kivy GUI (required by this app)
 from kivy.app import App
@@ -691,9 +692,20 @@ class PrototypeUI(BoxLayout):
         self.mask_switchboard = MaskSwitchboard(MASK_CATEGORIES)
         lc.add_widget(self.mask_switchboard)
 
-        # Run Trading Simulation Button
-        sim_button = Button(text='Run Trading Simulation', size_hint_y=None, height=40, background_color=(0.2, 0.6, 1, 1))
-        sim_button.bind(on_press=self.run_simulation)
+        # Mode toggle: Visualization Only vs Strategy Mode
+        mode_row = BoxLayout(size_hint_y=None, height=30)
+        mode_row.add_widget(Label(text='Mode:', size_hint_x=0.25))
+        self.viz_cb = CheckBox(group='run_mode', active=True, size_hint_x=0.12)
+        mode_row.add_widget(self.viz_cb)
+        mode_row.add_widget(Label(text='Viz', size_hint_x=0.25))
+        self.strat_cb = CheckBox(group='run_mode', active=False, size_hint_x=0.12)
+        mode_row.add_widget(self.strat_cb)
+        mode_row.add_widget(Label(text='Strategy', size_hint_x=0.26))
+        lc.add_widget(mode_row)
+
+        # Run Strategy Button
+        sim_button = Button(text='Run Strategy', size_hint_y=None, height=40, background_color=(0.2, 0.6, 1, 1))
+        sim_button.bind(on_press=self.on_run_button)
         lc.add_widget(sim_button)
 
         # Metrics
@@ -893,6 +905,194 @@ class PrototypeUI(BoxLayout):
 
         self.debug_box.text = f"Visualization: {active_count} masks active"
 
+    def on_run_button(self, instance):
+        """Dispatcher: run visualization or strategy depending on the mode toggle."""
+        if self.strat_cb.active:
+            self.run_strategy(instance)
+        else:
+            self.run_simulation(instance)
+
+    def run_strategy(self, instance):
+        """
+        Peak-detection trading strategy using binary masks only.
+        A buy peak occurs when the total count of active buy masks reaches a local
+        maximum (greater than both the previous and next bar).  A sell peak is the
+        mirror for sell masks.  Trades fire at those peaks; fees use the global FEE
+        constant.  All existing visualization (dots, heat-map, bars) is preserved and
+        trade entry/exit markers are added on top.
+        """
+        if self.df is None:
+            self.debug_box.text = "No data loaded"
+            return
+        if self.masks_df is None:
+            self.debug_box.text = "No mask file loaded. Please run aa.py first."
+            return
+
+        active_masks = set(self.mask_switchboard.get_active_masks())
+
+        s = int(self.start_index)
+        e = min(len(self.df), s + int(self.page_size))
+        view = self.df.iloc[s:e].reset_index(drop=True)
+        if view.empty:
+            self.debug_box.text = "Empty view"
+            return
+
+        view_masks = self.masks_df.iloc[s:e].reset_index(drop=True)
+        if len(view_masks) != len(view):
+            self.debug_box.text = "Mask/indicator length mismatch"
+            return
+
+        # Same buy/sell mask classification used in run_simulation
+        BUY_MASKS = {
+            "PHI_OOS_DOWN", "PHI_CROSS_UP", "PHI_TREND_UP",
+            "BOOL_STD_D1", "BOOL_STD_D2", "BOOL_STD_D3",
+            "CRAP5_7_D", "CRAP9_2_D", "CRAP14_8_D", "CRAP24_D",
+            "CRAP5_7_TROUGH", "CRAP9_2_TROUGH", "CRAP14_8_TROUGH", "CRAP24_TROUGH",
+            "CRAP5_7_MU", "CRAP9_2_MU", "CRAP14_8_MU", "CRAP24_MU",
+            "RSI_OVERSOLD", "THETA_BUY",
+        }
+
+        # --- Step 1: accumulate buy / sell counts per bar ---
+        buy_counts = pd.Series(0, index=view_masks.index, dtype=float)
+        sell_counts = pd.Series(0, index=view_masks.index, dtype=float)
+        for mask_name in active_masks:
+            if mask_name in view_masks.columns:
+                col = view_masks[mask_name].fillna(0).astype(int)
+                if mask_name in BUY_MASKS:
+                    buy_counts += col
+                else:
+                    sell_counts += col
+
+        # --- Step 2: peak detection (local maxima) ---
+        # A peak is strictly greater than both its immediate neighbours.
+        buy_peak = (buy_counts > buy_counts.shift(1)) & (buy_counts > buy_counts.shift(-1))
+        sell_peak = (sell_counts > sell_counts.shift(1)) & (sell_counts > sell_counts.shift(-1))
+
+        # --- Step 3: trade execution ---
+        usd = 1000.0
+        btc = 0.0
+        position = 'USD'
+        trades = []
+
+        x_vals = view['TIME']
+
+        for i in range(len(view)):
+            price = float(view.loc[i, 'CURRENT_RATE'])
+            if buy_peak.iloc[i] and position == 'USD' and usd > 0:
+                btc = usd / (price * (1.0 + FEE))
+                trades.append(('BUY', i, price, usd, btc))
+                usd = 0.0
+                position = 'BTC'
+            elif sell_peak.iloc[i] and position == 'BTC' and btc > 0:
+                usd = btc * price * (1.0 - FEE)
+                trades.append(('SELL', i, price, usd, btc))
+                btc = 0.0
+                position = 'USD'
+
+        # Force-close any open position at end of view
+        if position == 'BTC' and btc > 0:
+            last_price = float(view.iloc[-1]['CURRENT_RATE'])
+            usd = btc * last_price * (1.0 - FEE)
+            trades.append(('SELL', len(view) - 1, last_price, usd, btc))
+            btc = 0.0
+            position = 'USD'
+
+        final_usd = usd
+        roi = ((final_usd - 1000.0) / 1000.0) * 100
+        buy_trade_count = sum(1 for t in trades if t[0] == 'BUY')
+
+        # --- Step 4: draw base chart + existing visualization (dots, heat-map, bars) ---
+        self.plot_all()
+
+        plotted_buy = False
+        plotted_sell = False
+
+        for mask_name in active_masks:
+            if mask_name in view_masks.columns:
+                color = MASK_COLORS.get(mask_name)
+                if color:
+                    if mask_name in BUY_MASKS:
+                        plotted_buy = True
+                    else:
+                        plotted_sell = True
+                    mask_bool = view_masks[mask_name].fillna(0).astype(bool)
+                    if mask_bool.any():
+                        self.ax_price.scatter(
+                            x_vals[mask_bool].values,
+                            view['CURRENT_RATE'][mask_bool].values,
+                            color=color, s=15, marker='.', zorder=5, alpha=0.5
+                        )
+
+        # Heat-map background glow
+        net_signal = buy_counts - sell_counts
+        max_intensity = net_signal.abs().max()
+        if max_intensity > 0:
+            ymin, ymax = self.ax_price.get_ylim()
+            t_arr = x_vals.values
+            n = len(net_signal)
+            i = 0
+            while i < n:
+                val = net_signal.iloc[i]
+                if val == 0:
+                    i += 1
+                    continue
+                sign = 1 if val > 0 else -1
+                j = i
+                while j < n and net_signal.iloc[j] != 0 and ((net_signal.iloc[j] > 0) == (sign > 0)):
+                    j += 1
+                seg_alpha = float(net_signal.iloc[i:j].abs().mean()) / float(max_intensity)
+                alpha = 0.05 + 0.2 * seg_alpha
+                hm_color = 'green' if sign > 0 else 'red'
+                self.ax_price.fill_between(t_arr[i:j], ymin, ymax, color=hm_color, alpha=alpha, zorder=1)
+                i = j
+
+        # Signal count bars
+        if buy_counts.any() or sell_counts.any():
+            price_min, price_max = self.ax_price.get_ylim()
+            price_range = price_max - price_min
+            baseline = price_min - price_range * 0.02
+            max_signal = max(int(buy_counts.max()), int(sell_counts.max()), 1)
+            scale = price_range * 0.05 / max_signal
+            x_pos = x_vals.values
+            bar_width = (x_pos[1] - x_pos[0]) * 0.6 if len(x_pos) > 1 else (self.ax_price.get_xlim()[1] - self.ax_price.get_xlim()[0]) * 0.005
+            if buy_counts.any():
+                self.ax_price.bar(x_pos, buy_counts.values * scale, bottom=baseline, width=bar_width, color='green', alpha=0.35, zorder=3)
+            if sell_counts.any():
+                self.ax_price.bar(x_pos, -(sell_counts.values * scale), bottom=baseline, width=bar_width, color='red', alpha=0.35, zorder=3)
+            self.ax_price.set_ylim(bottom=baseline - price_range * 0.02)
+
+        # Legend for mask signal types
+        legend_elements = []
+        if plotted_buy:
+            legend_elements.append(Patch(facecolor="#228B22", label="Buy Signals"))
+        if plotted_sell:
+            legend_elements.append(Patch(facecolor="#CC0000", label="Sell Signals"))
+
+        # --- Step 5: overlay trade entry / exit markers ---
+        for trade in trades:
+            xi = trade[1]
+            if 0 <= xi < len(x_vals):
+                x_pos_t = x_vals.iloc[xi]
+                if trade[0] == 'BUY':
+                    self.ax_price.scatter(x_pos_t, trade[2], color='lime', marker='^', s=120, zorder=11, edgecolors='darkgreen', linewidths=0.8)
+                else:
+                    self.ax_price.scatter(x_pos_t, trade[2], color='red', marker='v', s=120, zorder=11, edgecolors='darkred', linewidths=0.8)
+
+        # Add trade markers to legend
+        legend_elements.append(Line2D([0], [0], marker='^', color='w', markerfacecolor='lime', markeredgecolor='darkgreen', markersize=9, label='Buy (peak)'))
+        legend_elements.append(Line2D([0], [0], marker='v', color='w', markerfacecolor='red', markeredgecolor='darkred', markersize=9, label='Sell (peak)'))
+        if legend_elements:
+            self.ax_price.legend(handles=legend_elements, loc='upper right', fontsize='small')
+
+        self.canvas_widget.draw()
+
+        self.metrics_label.text = (
+            f"STRATEGY MODE:\n"
+            f"ROI: {roi:.2f}%\n"
+            f"Buy Trades: {buy_trade_count}\n"
+            f"Final: ${final_usd:.2f}"
+        )
+        self.debug_box.text = f"Strategy: {len(trades)} signals, ROI={roi:.2f}%"
 
     def _try_load_default(self):
         try:
