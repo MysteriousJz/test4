@@ -39,6 +39,7 @@ POS_THETA_DEG = 9.01  # CORRECTED: Changed from 23.6 to 9.01
 NEG_THETA_DEG = -9.01  # CORRECTED: Changed from -23.6 to -9.01
 DEBOUNCE_TICKS = 1 #maybe unused
 FEE = 0.0025 #starter fee
+PROFIT_TARGET_PCT = 0.6  # auto-sell profit target in percent
 BUY_MARKER='s'; SELL_MARKER='o'
 PRICE_COLOR='#000000'
 
@@ -918,6 +919,17 @@ class PrototypeUI(BoxLayout):
         has_phi_oos_down = 'PHI_OOS_DOWN' in view_masks.columns
         has_phi_oos_up   = 'PHI_OOS_UP'   in view_masks.columns
 
+        # Patience filter — avoid buying at exact capitulation lows.
+        # Uses a 60-bar rolling minimum (each bar is ~2 seconds, so 60 bars ≈ 2 minutes).
+        # confirmed_exit_from_low is True when price was at a rolling low 1–2 bars ago
+        # and has now moved above it, confirming the low is behind us.
+        price_rolling_min = view['CURRENT_RATE'].rolling(60, min_periods=30).min()
+        at_2min_low = (view['CURRENT_RATE'] == price_rolling_min)
+        low_occurred_recently = at_2min_low.rolling(2).max().shift(1).fillna(False).astype(bool)
+        confirmed_exit_from_low = (~at_2min_low) & low_occurred_recently
+
+        avg_buy_price = None  # entry price used by the +0.6% profit-target check
+
         for i in range(len(view)):
             price = float(view.loc[i, 'CURRENT_RATE'])
             current_buy_count = buy_counts.iloc[i]
@@ -930,17 +942,33 @@ class PrototypeUI(BoxLayout):
             buy_signal  = buy_peak.iloc[i]  and phi_oos_down
             sell_signal = sell_peak.iloc[i] and phi_oos_up
 
+            # Profit target — auto-sell at +PROFIT_TARGET_PCT% gain, checked before normal sell logic
+            if position == 'BTC' and btc > 0 and avg_buy_price is not None:
+                profit_pct = (price - avg_buy_price) / avg_buy_price * 100
+                if profit_pct >= PROFIT_TARGET_PCT:
+                    usd = btc * price * (1.0 - FEE)
+                    trades.append(('SELL', i, price, usd, btc))
+                    btc = 0.0
+                    position = 'USD'
+                    avg_buy_price = None
+                    continue
+
             # Only buy when buys dominate or equal sells (no counter-trend longs)
-            if buy_signal and position == 'USD' and usd > 0 and current_sell_count <= current_buy_count:
+            # and price has confirmed an exit from the 2-min low (patience filter)
+            if (buy_signal and confirmed_exit_from_low.iloc[i]
+                    and position == 'USD' and usd > 0
+                    and current_sell_count <= current_buy_count):
                 btc = usd / (price * (1.0 + FEE))
                 trades.append(('BUY', i, price, usd, btc))
                 usd = 0.0
                 position = 'BTC'
+                avg_buy_price = price  # record entry for profit-target tracking
             elif sell_signal and position == 'BTC' and btc > 0 and current_buy_count <= current_sell_count:  # sells dominate or equal
                 usd = btc * price * (1.0 - FEE)
                 trades.append(('SELL', i, price, usd, btc))
                 btc = 0.0
                 position = 'USD'
+                avg_buy_price = None
 
         # Force-close any open position at end of view
         if position == 'BTC' and btc > 0:
@@ -949,6 +977,7 @@ class PrototypeUI(BoxLayout):
             trades.append(('SELL', len(view) - 1, last_price, usd, btc))
             btc = 0.0
             position = 'USD'
+            avg_buy_price = None
 
         final_usd = usd
         roi = ((final_usd - 1000.0) / 1000.0) * 100
