@@ -914,17 +914,29 @@ class PrototypeUI(BoxLayout):
 
         x_vals = view['TIME']
 
+        # PHI_OOS column availability — checked once, outside the trade loop
+        has_phi_oos_down = 'PHI_OOS_DOWN' in view_masks.columns
+        has_phi_oos_up   = 'PHI_OOS_UP'   in view_masks.columns
+
         for i in range(len(view)):
             price = float(view.loc[i, 'CURRENT_RATE'])
             current_buy_count = buy_counts.iloc[i]
             current_sell_count = sell_counts.iloc[i]
+
+            # PHI_OOS confirmation — only trade when out-of-sample signal agrees
+            phi_oos_down = bool(view_masks['PHI_OOS_DOWN'].iloc[i]) if has_phi_oos_down else False
+            phi_oos_up   = bool(view_masks['PHI_OOS_UP'].iloc[i])   if has_phi_oos_up   else False
+
+            buy_signal  = buy_peak.iloc[i]  and phi_oos_down
+            sell_signal = sell_peak.iloc[i] and phi_oos_up
+
             # Only buy when buys dominate or equal sells (no counter-trend longs)
-            if buy_peak.iloc[i] and position == 'USD' and usd > 0 and current_sell_count <= current_buy_count:
+            if buy_signal and position == 'USD' and usd > 0 and current_sell_count <= current_buy_count:
                 btc = usd / (price * (1.0 + FEE))
                 trades.append(('BUY', i, price, usd, btc))
                 usd = 0.0
                 position = 'BTC'
-            elif sell_peak.iloc[i] and position == 'BTC' and btc > 0 and current_buy_count <= current_sell_count:  # sells dominate or equal
+            elif sell_signal and position == 'BTC' and btc > 0 and current_buy_count <= current_sell_count:  # sells dominate or equal
                 usd = btc * price * (1.0 - FEE)
                 trades.append(('SELL', i, price, usd, btc))
                 btc = 0.0
@@ -1275,29 +1287,28 @@ class PrototypeUI(BoxLayout):
                         else:
                             sell_counts_pa += col
 
-                # Panel A: Buy signal counts — short-term (solid) and long-term Fibonacci MAs (dashed)
+                # Four distinct-colored Fibonacci MAs — same periods/colors on both panels
+                # so each line is immediately identifiable regardless of panel.
+                PANEL_AVERAGES = [
+                    (144,  '#800080'),  # Purple
+                    (377,  '#FFD700'),  # Gold
+                    (987,  '#008080'),  # Teal
+                    (1597, '#000000'),  # Black
+                ]
+
+                # Panel A: Buy signal counts
                 self.ax_buy.plot(x, buy_counts_pa.values, color='darkgreen', linewidth=1.5, label='Buy Count')
-                for period, color in [(55, '#90EE90'), (34, '#32CD32'), (21, '#228B22'), (13, '#006400')]:
+                for period, color in PANEL_AVERAGES:
                     if len(buy_counts_pa) >= period // 2:
                         ma = buy_counts_pa.rolling(period, min_periods=period // 2).mean()
                         self.ax_buy.plot(x, ma.values, color=color, linewidth=1, alpha=0.7, label=f'{period}-MA')
-                # Longer-term Fibonacci MAs (144–987) — plotted dashed, progressively darker green
-                for period, color in [(144, '#E0FFE0'), (233, '#C0FFC0'), (377, '#A0FFA0'), (610, '#80FF80'), (987, '#60FF60')]:
-                    if len(buy_counts_pa) >= period // 2:
-                        ma = buy_counts_pa.rolling(period, min_periods=period // 2).mean()
-                        self.ax_buy.plot(x, ma.values, color=color, linewidth=1, alpha=0.8, linestyle='--', label=f'{period}-MA')
 
-                # Panel B: Sell signal counts — short-term (solid) and long-term Fibonacci MAs (dashed)
+                # Panel B: Sell signal counts
                 self.ax_sell.plot(x, sell_counts_pa.values, color='darkred', linewidth=1.5, label='Sell Count')
-                for period, color in [(55, '#F08080'), (34, '#FA8072'), (21, '#FF6347'), (13, '#B22222')]:
+                for period, color in PANEL_AVERAGES:
                     if len(sell_counts_pa) >= period // 2:
                         ma = sell_counts_pa.rolling(period, min_periods=period // 2).mean()
                         self.ax_sell.plot(x, ma.values, color=color, linewidth=1, alpha=0.7, label=f'{period}-MA')
-                # Longer-term Fibonacci MAs (144–987) — plotted dashed, progressively darker red
-                for period, color in [(144, '#FFE0E0'), (233, '#FFC0C0'), (377, '#FFA0A0'), (610, '#FF8080'), (987, '#FF6060')]:
-                    if len(sell_counts_pa) >= period // 2:
-                        ma = sell_counts_pa.rolling(period, min_periods=period // 2).mean()
-                        self.ax_sell.plot(x, ma.values, color=color, linewidth=1, alpha=0.8, linestyle='--', label=f'{period}-MA')
 
         self.ax_buy.set_ylabel('Buy Count')
         self.ax_buy.legend(loc='upper left', fontsize='x-small')
