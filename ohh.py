@@ -809,6 +809,7 @@ class PrototypeUI(BoxLayout):
         }
 
         # 4. Refresh base plot — this also updates metrics_label with avg-user ROI/price stats
+        active_count = len(active_masks)  # used below for the debug status message
         self.plot_all()
         x_vals = view['TIME']
 
