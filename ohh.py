@@ -711,6 +711,34 @@ class PrototypeUI(BoxLayout):
         mode_row.add_widget(Label(text='Strategy', size_hint_x=0.26))
         lc.add_widget(mode_row)
 
+        # Strategy parameter controls — let the user tune the key numbers without
+        # editing source code.  Defaults match the original hardcoded values.
+        lc.add_widget(Label(
+            text='[b]Strategy Params[/b]', markup=True,
+            size_hint_y=None, height=20, font_size=12,
+        ))
+
+        def _param_row(label_text, default_val):
+            row = BoxLayout(size_hint_y=None, height=28)
+            row.add_widget(Label(text=label_text, size_hint_x=0.6, font_size=11))
+            ti = TextInput(text=str(default_val), multiline=False,
+                           size_hint_x=0.4, font_size=11)
+            row.add_widget(ti)
+            return row, ti
+
+        r, self.param_start_capital = _param_row('Start capital ($):', 1000)
+        lc.add_widget(r)
+        r, self.param_fee_pct = _param_row('Fee (%):', 0.25)
+        lc.add_widget(r)
+        r, self.param_profit_target = _param_row('Profit target (%):', 0.6)
+        lc.add_widget(r)
+        r, self.param_buy_window = _param_row('Buy peak window (bars):', 55)
+        lc.add_widget(r)
+        r, self.param_sell_window = _param_row('Sell peak window (bars):', 89)
+        lc.add_widget(r)
+        r, self.param_patience = _param_row('Patience bars:', 60)
+        lc.add_widget(r)
+
         # Run Strategy Button
         sim_button = Button(text='Run Strategy', size_hint_y=None, height=40, background_color=(0.2, 0.6, 1, 1))
         sim_button.bind(on_press=self.on_run_button)
@@ -860,9 +888,9 @@ class PrototypeUI(BoxLayout):
         Peak-detection trading strategy using binary masks only.
         A buy peak occurs when the total count of active buy masks reaches a local
         maximum (greater than both the previous and next bar).  A sell peak is the
-        mirror for sell masks.  Trades fire at those peaks; fees use the global FEE
-        constant.  All existing visualization (dots, heat-map, bars) is preserved and
-        trade entry/exit markers are added on top.
+        mirror for sell masks.  Fees and other tuning parameters are read from the
+        Strategy Params inputs in the left panel.  Trade entry/exit markers are
+        overlaid on the existing visualization.
         """
         if self.df is None:
             self.debug_box.text = "No data loaded"
@@ -884,6 +912,20 @@ class PrototypeUI(BoxLayout):
         if len(view_masks) != len(view):
             self.debug_box.text = "Mask/indicator length mismatch"
             return
+
+        # --- Read UI-controlled strategy parameters ---
+        def _pf(widget, default):
+            try:
+                return float(widget.text)
+            except (ValueError, AttributeError):
+                return default
+
+        start_capital  = _pf(self.param_start_capital, 1000.0)
+        fee            = _pf(self.param_fee_pct,        0.25) / 100.0
+        profit_target  = _pf(self.param_profit_target,  0.6)
+        buy_window     = max(2, int(_pf(self.param_buy_window,   55)))
+        sell_window    = max(2, int(_pf(self.param_sell_window,  89)))
+        patience_bars  = max(1, int(_pf(self.param_patience,     60)))
 
         # Same buy/sell mask classification used in run_simulation
         BUY_MASKS = {
@@ -917,13 +959,13 @@ class PrototypeUI(BoxLayout):
         #   greater than the previous bar (rising-edge condition).  The rising-edge check
         #   means only the very FIRST bar of a plateau triggers a trade, not every bar
         #   that stays at the plateau level.
-        rolling_max_buy  = buy_counts.rolling(BUY_PEAK_WINDOW,  min_periods=BUY_PEAK_WINDOW  // 2).max()
-        rolling_max_sell = sell_counts.rolling(SELL_PEAK_WINDOW, min_periods=SELL_PEAK_WINDOW // 2).max()
+        rolling_max_buy  = buy_counts.rolling(buy_window,  min_periods=buy_window  // 2).max()
+        rolling_max_sell = sell_counts.rolling(sell_window, min_periods=sell_window // 2).max()
         buy_peak  = (buy_counts  == rolling_max_buy)  & (buy_counts  > buy_counts.shift(1).fillna(0))
         sell_peak = (sell_counts == rolling_max_sell) & (sell_counts > sell_counts.shift(1).fillna(0))
 
         # --- Step 3: trade execution ---
-        usd = 1000.0
+        usd = start_capital
         btc = 0.0
         position = 'USD'
         trades = []
@@ -954,7 +996,7 @@ class PrototypeUI(BoxLayout):
         #       1. We are NOT currently at the rolling low  (price has moved up)
         #       2. A low WAS present 1-2 bars ago           (the dip just happened)
         #   Only bars where confirmed_exit_from_low is True are allowed to buy.
-        price_rolling_min = view['CURRENT_RATE'].rolling(60, min_periods=30).min()
+        price_rolling_min = view['CURRENT_RATE'].rolling(patience_bars, min_periods=patience_bars // 2).min()
         at_2min_low = (view['CURRENT_RATE'] == price_rolling_min)
         low_occurred_recently = at_2min_low.rolling(2).max().shift(1).fillna(False).astype(bool)
         confirmed_exit_from_low = (~at_2min_low) & low_occurred_recently
@@ -1000,9 +1042,9 @@ class PrototypeUI(BoxLayout):
             # sell immediately and skip the rest of this bar's logic (continue).
             if position == 'BTC' and btc > 0 and avg_buy_price is not None:
                 profit_pct = (price - avg_buy_price) / avg_buy_price * 100
-                if profit_pct >= PROFIT_TARGET_PCT:
+                if profit_pct >= profit_target:
                     # Lock in the gain: convert BTC back to USD, deduct trading fee.
-                    usd = btc * price * (1.0 - FEE)
+                    usd = btc * price * (1.0 - fee)
                     trades.append(('SELL', i, price, usd, btc))
                     btc = 0.0
                     position = 'USD'
@@ -1020,7 +1062,7 @@ class PrototypeUI(BoxLayout):
                     and position == 'USD' and usd > 0
                     and current_sell_count <= current_buy_count):
                 # Convert all USD to BTC, paying the taker fee on the way in.
-                btc = usd / (price * (1.0 + FEE))
+                btc = usd / (price * (1.0 + fee))
                 trades.append(('BUY', i, price, usd, btc))
                 usd = 0.0
                 position = 'BTC'
@@ -1032,7 +1074,7 @@ class PrototypeUI(BoxLayout):
             elif (sell_signal and position == 'BTC' and btc > 0
                     and current_buy_count <= current_sell_count):
                 # Convert all BTC back to USD, paying the taker fee on the way out.
-                usd = btc * price * (1.0 - FEE)
+                usd = btc * price * (1.0 - fee)
                 trades.append(('SELL', i, price, usd, btc))
                 btc = 0.0
                 position = 'USD'
@@ -1041,14 +1083,14 @@ class PrototypeUI(BoxLayout):
         # Force-close any open position at end of view
         if position == 'BTC' and btc > 0:
             last_price = float(view.iloc[-1]['CURRENT_RATE'])
-            usd = btc * last_price * (1.0 - FEE)
+            usd = btc * last_price * (1.0 - fee)
             trades.append(('SELL', len(view) - 1, last_price, usd, btc))
             btc = 0.0
             position = 'USD'
             avg_buy_price = None
 
         final_usd = usd
-        roi = ((final_usd - 1000.0) / 1000.0) * 100
+        roi = ((final_usd - start_capital) / start_capital) * 100
         buy_trade_count = sum(1 for t in trades if t[0] == 'BUY')
 
         # --- Step 4: draw base chart + existing visualization (dots, heat-map, bars) ---
