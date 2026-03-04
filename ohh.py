@@ -172,6 +172,16 @@ MASK_COLORS = {
     "THETA_SELL":      "#A50000",   # very dark red
 }
 
+# Buy-side mask names used for legend bucketing and dot colouring
+BUY_MASKS = {
+    "PHI_OOS_DOWN", "PHI_CROSS_UP", "PHI_TREND_UP",
+    "BOOL_STD_D1", "BOOL_STD_D2", "BOOL_STD_D3",
+    "CRAP5_7_D", "CRAP9_2_D", "CRAP14_8_D", "CRAP24_D",
+    "CRAP5_7_TROUGH", "CRAP9_2_TROUGH", "CRAP14_8_TROUGH", "CRAP24_TROUGH",
+    "CRAP5_7_MU", "CRAP9_2_MU", "CRAP14_8_MU", "CRAP24_MU",
+    "RSI_OVERSOLD", "THETA_BUY",
+}
+
 # HELPERS
 
 #HELP ME HELP YOU HELP US
@@ -869,17 +879,7 @@ class PrototypeUI(BoxLayout):
             self.debug_box.text = "Mask/indicator length mismatch"
             return
 
-        # 3. Define buy-side masks for legend bucketing
-        BUY_MASKS = {
-            "PHI_OOS_DOWN", "PHI_CROSS_UP", "PHI_TREND_UP",
-            "BOOL_STD_D1", "BOOL_STD_D2", "BOOL_STD_D3",
-            "CRAP5_7_D", "CRAP9_2_D", "CRAP14_8_D", "CRAP24_D",
-            "CRAP5_7_TROUGH", "CRAP9_2_TROUGH", "CRAP14_8_TROUGH", "CRAP24_TROUGH",
-            "CRAP5_7_MU", "CRAP9_2_MU", "CRAP14_8_MU", "CRAP24_MU",
-            "RSI_OVERSOLD", "THETA_BUY",
-        }
-
-        # 4. Refresh base plot — this also updates metrics_label with avg-user ROI/price stats
+        # 3. Refresh base plot — this also updates metrics_label with avg-user ROI/price stats
         active_count = len(active_masks)  # used below for the debug status message
         self.plot_all()
         x_vals = view['TIME']
