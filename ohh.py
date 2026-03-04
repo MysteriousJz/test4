@@ -736,36 +736,49 @@ class PrototypeUI(BoxLayout):
         lc.add_widget(r)
         r, self.param_profit_target = _param_row('Profit target (%):', 0.6)
         lc.add_widget(r)
-        r, self.param_buy_threshold = _param_row('Buy threshold (masks):', 1)
-        lc.add_widget(r)
-        r, self.param_sell_threshold = _param_row('Sell threshold (masks):', 1)
-        lc.add_widget(r)
-        r, self.param_buy_dom = _param_row('Buy dominance ratio:', 0.0)
-        lc.add_widget(r)
-        r, self.param_sell_dom = _param_row('Sell dominance ratio:', 0.0)
-        lc.add_widget(r)
 
-        # Custom Rule Builder — add per-mask AND-logic gate conditions
+        # --- Buy Rules ---
         lc.add_widget(Label(
-            text='[b]Custom Rules[/b]', markup=True,
+            text='[b]Buy Rules[/b]', markup=True,
             size_hint_y=None, height=20, font_size=12,
         ))
         lc.add_widget(Label(
-            text='[mask]  [op]  [val]  [bars]',
+            text='[mask] [state] [pattern] [N] [M] [logic]',
             size_hint_y=None, height=14, font_size=9, color=(0.7, 0.7, 0.7, 1),
         ))
-        self._rule_rows = []
-        self._rule_container = GridLayout(cols=1, size_hint_y=None, spacing=2)
-        self._rule_container.bind(minimum_height=self._rule_container.setter('height'))
-        rule_scroll = ScrollView(size_hint_y=None, height=160)
-        rule_scroll.add_widget(self._rule_container)
-        lc.add_widget(rule_scroll)
+        self._buy_rule_rows = []
+        self.buy_rule_container = GridLayout(cols=1, size_hint_y=None, spacing=2)
+        self.buy_rule_container.bind(minimum_height=self.buy_rule_container.setter('height'))
+        buy_scroll = ScrollView(size_hint_y=None, height=120)
+        buy_scroll.add_widget(self.buy_rule_container)
+        lc.add_widget(buy_scroll)
+
+        # --- Sell Rules ---
+        lc.add_widget(Label(
+            text='[b]Sell Rules[/b]', markup=True,
+            size_hint_y=None, height=20, font_size=12,
+        ))
+        lc.add_widget(Label(
+            text='[mask] [state] [pattern] [N] [M] [logic]',
+            size_hint_y=None, height=14, font_size=9, color=(0.7, 0.7, 0.7, 1),
+        ))
+        self._sell_rule_rows = []
+        self.sell_rule_container = GridLayout(cols=1, size_hint_y=None, spacing=2)
+        self.sell_rule_container.bind(minimum_height=self.sell_rule_container.setter('height'))
+        sell_scroll = ScrollView(size_hint_y=None, height=120)
+        sell_scroll.add_widget(self.sell_rule_container)
+        lc.add_widget(sell_scroll)
+
+        # Rule addition buttons
         rule_btn_row = BoxLayout(size_hint_y=None, height=30)
-        add_rule_btn = Button(text='+ Add Rule', size_hint_x=0.5)
-        clr_rule_btn = Button(text='Clear All', size_hint_x=0.5)
-        add_rule_btn.bind(on_press=self._add_rule_row)
+        add_buy_btn  = Button(text='+ Buy Rule',  size_hint_x=0.33)
+        add_sell_btn = Button(text='+ Sell Rule', size_hint_x=0.33)
+        clr_rule_btn = Button(text='Clear All',   size_hint_x=0.34)
+        add_buy_btn.bind(on_press=lambda x: self._add_rule_row('buy'))
+        add_sell_btn.bind(on_press=lambda x: self._add_rule_row('sell'))
         clr_rule_btn.bind(on_press=self._clear_rules)
-        rule_btn_row.add_widget(add_rule_btn)
+        rule_btn_row.add_widget(add_buy_btn)
+        rule_btn_row.add_widget(add_sell_btn)
         rule_btn_row.add_widget(clr_rule_btn)
         lc.add_widget(rule_btn_row)
 
@@ -950,36 +963,11 @@ class PrototypeUI(BoxLayout):
             except (ValueError, AttributeError):
                 return default
 
-        start_capital  = _pf(self.param_start_capital,  1000.0)
-        fee            = _pf(self.param_fee_pct,          0.25) / 100.0
-        profit_target  = _pf(self.param_profit_target,    0.6)
-        buy_threshold  = max(0.0, _pf(self.param_buy_threshold,  1.0))
-        sell_threshold = max(0.0, _pf(self.param_sell_threshold, 1.0))
-        buy_dom_ratio  = max(0.0, _pf(self.param_buy_dom,        0.0))
-        sell_dom_ratio = max(0.0, _pf(self.param_sell_dom,       0.0))
+        start_capital = _pf(self.param_start_capital, 1000.0)
+        fee           = _pf(self.param_fee_pct,         0.25) / 100.0
+        profit_target = _pf(self.param_profit_target,   0.6)
 
-        # Buy/sell mask classification (same as run_simulation)
-        BUY_MASKS = {
-            "PHI_OOS_DOWN", "PHI_CROSS_UP", "PHI_TREND_UP",
-            "BOOL_STD_D1", "BOOL_STD_D2", "BOOL_STD_D3",
-            "CRAP5_7_D", "CRAP9_2_D", "CRAP14_8_D", "CRAP24_D",
-            "CRAP5_7_TROUGH", "CRAP9_2_TROUGH", "CRAP14_8_TROUGH", "CRAP24_TROUGH",
-            "CRAP5_7_MU", "CRAP9_2_MU", "CRAP14_8_MU", "CRAP24_MU",
-            "RSI_OVERSOLD", "THETA_BUY",
-        }
-
-        # --- Step 1: accumulate buy / sell counts per bar ---
-        buy_counts  = pd.Series(0, index=view_masks.index, dtype=float)
-        sell_counts = pd.Series(0, index=view_masks.index, dtype=float)
-        for mask_name in active_masks:
-            if mask_name in view_masks.columns:
-                col = view_masks[mask_name].fillna(0).astype(int)
-                if mask_name in BUY_MASKS:
-                    buy_counts  += col
-                else:
-                    sell_counts += col
-
-        # --- Step 2: trade execution ---
+        # --- Step 1: trade execution ---
         usd = start_capital
         btc = 0.0
         position = 'USD'
@@ -990,8 +978,6 @@ class PrototypeUI(BoxLayout):
 
         for i in range(len(view)):
             price = float(view.loc[i, 'CURRENT_RATE'])
-            current_buy_count  = buy_counts.iloc[i]
-            current_sell_count = sell_counts.iloc[i]
 
             # --- Profit target (skipped when profit_target <= 0) ---
             if (profit_target > 0 and position == 'BTC'
@@ -1002,23 +988,16 @@ class PrototypeUI(BoxLayout):
                     btc = 0.0; position = 'USD'; avg_buy_price = None
                     continue
 
-            # --- Custom rule gate (AND-logic; True when no rules defined) ---
-            custom_ok = self._eval_custom_rules(i, view_masks)
-
-            # --- BUY: threshold met + dominance check + custom rules ---
-            if (current_buy_count >= buy_threshold
-                    and current_buy_count > current_sell_count * buy_dom_ratio
-                    and custom_ok
+            # --- BUY: all buy rules pass ---
+            if (self._evaluate_rule_group(self._buy_rule_rows, i, view_masks)
                     and position == 'USD' and usd > 0):
                 btc = usd / (price * (1.0 + fee))
                 trades.append(('BUY', i, price, usd, btc))
                 usd = 0.0; position = 'BTC'
                 avg_buy_price = price
 
-            # --- SELL: threshold met + dominance check + custom rules ---
-            elif (current_sell_count >= sell_threshold
-                    and current_sell_count > current_buy_count * sell_dom_ratio
-                    and custom_ok
+            # --- SELL: all sell rules pass ---
+            elif (self._evaluate_rule_group(self._sell_rule_rows, i, view_masks)
                     and position == 'BTC' and btc > 0):
                 usd = btc * price * (1.0 - fee)
                 trades.append(('SELL', i, price, usd, btc))
@@ -1037,7 +1016,7 @@ class PrototypeUI(BoxLayout):
         roi = ((final_usd - start_capital) / start_capital) * 100
         buy_trade_count = sum(1 for t in trades if t[0] == 'BUY')
 
-        # --- Step 3: draw base chart + existing visualization ---
+        # --- Step 2: draw base chart + existing visualization ---
         self.plot_all()
 
         plotted_buy = False
@@ -1125,57 +1104,129 @@ class PrototypeUI(BoxLayout):
             row_lbl = Label(text=trade_text, size_hint_y=None, height=18, font_size=10)
             self.trade_log_container.add_widget(row_lbl)
 
-    def _add_rule_row(self, instance=None):
-        """Append one editable rule row to the Custom Rule Builder."""
+    def _add_rule_row(self, rule_type):
+        """
+        Append one editable rule row to either the buy or sell rule builder.
+        rule_type: 'buy' or 'sell'
+        Row fields: mask, state (is ON/OFF), pattern, N, M, AND/OR/XOR logic, Remove button.
+        """
         row = BoxLayout(size_hint_y=None, height=28, spacing=2)
         mask_sp = Spinner(
             text=ALL_MASK_NAMES[0], values=ALL_MASK_NAMES,
-            size_hint_x=0.38, font_size=9,
+            size_hint_x=0.25, font_size=9,
         )
-        op_sp = Spinner(
-            text='>=', values=['>', '<', '=', '>=', '<='],
-            size_hint_x=0.17, font_size=10,
+        state_sp = Spinner(
+            text='is ON', values=['is ON', 'is OFF'],
+            size_hint_x=0.12, font_size=9,
         )
-        thresh_ti = TextInput(text='1', multiline=False, size_hint_x=0.22, font_size=10)
-        consec_ti = TextInput(text='1', multiline=False, size_hint_x=0.23, font_size=10)
-        row.add_widget(mask_sp)
-        row.add_widget(op_sp)
-        row.add_widget(thresh_ti)
-        row.add_widget(consec_ti)
-        self._rule_container.add_widget(row)
-        self._rule_rows.append((mask_sp, op_sp, thresh_ti, consec_ti))
+        pattern_sp = Spinner(
+            text='for N bars',
+            values=['for N bars', 'for N of M bars', 'then OFF for M bars'],
+            size_hint_x=0.20, font_size=8,
+        )
+        n_ti      = TextInput(text='1', multiline=False, size_hint_x=0.10, font_size=9)
+        m_ti      = TextInput(text='1', multiline=False, size_hint_x=0.10, font_size=9)
+        logic_sp  = Spinner(
+            text='AND', values=['AND', 'OR', 'XOR'],
+            size_hint_x=0.14, font_size=9,
+        )
+        remove_btn = Button(text='X', size_hint_x=0.09, font_size=9)
+
+        for widget in [mask_sp, state_sp, pattern_sp, n_ti, m_ti, logic_sp, remove_btn]:
+            row.add_widget(widget)
+
+        container  = self.buy_rule_container  if rule_type == 'buy'  else self.sell_rule_container
+        rule_list  = self._buy_rule_rows      if rule_type == 'buy'  else self._sell_rule_rows
+
+        rule_entry = (row, (mask_sp, state_sp, pattern_sp, n_ti, m_ti, logic_sp))
+        rule_list.append(rule_entry)
+
+        def _remove(instance, entry=rule_entry, lst=rule_list, cont=container):
+            cont.remove_widget(entry[0])
+            if entry in lst:
+                lst.remove(entry)
+
+        remove_btn.bind(on_press=_remove)
+        container.add_widget(row)
 
     def _clear_rules(self, instance=None):
-        """Remove all custom rule rows."""
-        self._rule_container.clear_widgets()
-        self._rule_rows.clear()
+        """Remove all buy and sell rule rows."""
+        self.buy_rule_container.clear_widgets()
+        self.sell_rule_container.clear_widgets()
+        self._buy_rule_rows.clear()
+        self._sell_rule_rows.clear()
 
-    def _eval_custom_rules(self, bar_idx, view_masks):
+    def _evaluate_rule_group(self, rule_rows, bar_idx, view_masks):
         """
-        Evaluate all custom rules for the given bar.
-        Returns True if every rule passes (or if no rules are defined).
-        Each rule: mask op threshold for consec_bars consecutive bars must all pass.
-        Rules referencing unknown masks are skipped rather than blocking trades.
+        Evaluate a list of buy or sell rules for a given bar.
+
+        Returns True if the combined result is True (or if no rules are defined).
+
+        Patterns:
+          'for N bars'       – mask state holds for N consecutive bars ending at bar_idx.
+          'for N of M bars'  – mask state holds for at least N of the last M bars.
+          'then OFF for M bars' – last M bars the mask is OFF (==0), AND bar M+1 ago was ON.
+
+        Logic (AND/OR/XOR) of each rule combines it with the accumulated result so far;
+        the first rule's logic field is not used.
         """
-        for mask_sp, op_sp, thresh_ti, consec_ti in self._rule_rows:
-            mask_name = mask_sp.text
-            op = op_sp.text
+        if not rule_rows:
+            return True
+
+        def _satisfies_state(val, state_is_on):
+            return (val != 0) if state_is_on else (val == 0)
+
+        combined = None
+        for row, (mask_sp, state_sp, pattern_sp, n_ti, m_ti, logic_sp) in rule_rows:
+            mask_name  = mask_sp.text
+            state_is_on = (state_sp.text == 'is ON')
+            pattern    = pattern_sp.text
             try:
-                threshold   = float(thresh_ti.text)
-                consec_bars = max(1, int(float(consec_ti.text)))
+                n = max(1, int(float(n_ti.text)))
+                m = max(1, int(float(m_ti.text)))
             except ValueError:
-                continue
+                n, m = 1, 1
+
             if mask_name not in view_masks.columns:
-                continue  # skip rule for unknown mask; don't block trades
-            start   = max(0, bar_idx - consec_bars + 1)
-            segment = view_masks[mask_name].iloc[start:bar_idx + 1].fillna(0).astype(float)
-            for val in segment:
-                if   op == '>'  and not (val >  threshold): return False
-                elif op == '<'  and not (val <  threshold): return False
-                elif op == '='  and not (val == threshold): return False
-                elif op == '>=' and not (val >= threshold): return False
-                elif op == '<=' and not (val <= threshold): return False
-        return True
+                result = True  # unknown mask: skip, don't block
+            else:
+                col = view_masks[mask_name].fillna(0).astype(float)
+
+                if pattern == 'for N bars':
+                    start   = max(0, bar_idx - n + 1)
+                    segment = col.iloc[start:bar_idx + 1]
+                    result  = (len(segment) >= n
+                               and all(_satisfies_state(v, state_is_on) for v in segment))
+
+                elif pattern == 'for N of M bars':
+                    start   = max(0, bar_idx - m + 1)
+                    segment = col.iloc[start:bar_idx + 1]
+                    count   = sum(1 for v in segment if _satisfies_state(v, state_is_on))
+                    result  = (count >= n)
+
+                elif pattern == 'then OFF for M bars':
+                    # Last M bars (inclusive of current bar) must all be OFF (==0);
+                    # the bar just before that window (bar_idx - m) must have been ON,
+                    # confirming a transition from ON to OFF.
+                    start   = max(0, bar_idx - m + 1)
+                    segment = col.iloc[start:bar_idx + 1]
+                    all_off  = all(v == 0 for v in segment)
+                    prev_idx = bar_idx - m
+                    prev_on  = (bool(col.iloc[prev_idx] != 0)) if prev_idx >= 0 else False
+                    result  = all_off and prev_on
+
+                else:
+                    result = True
+
+            if combined is None:
+                combined = result
+            else:
+                op = logic_sp.text
+                if   op == 'AND': combined = combined and result
+                elif op == 'OR':  combined = combined or  result
+                elif op == 'XOR': combined = combined ^   result
+
+        return bool(combined) if combined is not None else True
 
     def _try_load_default(self):
         try:
