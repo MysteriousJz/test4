@@ -24,6 +24,7 @@ from kivy.uix.label import Label
 from kivy.uix.button import Button
 from kivy.uix.textinput import TextInput
 from kivy.uix.checkbox import CheckBox
+from kivy.uix.spinner import Spinner
 from kivy.properties import NumericProperty
 from kivy.clock import Clock
 from kivy_garden.matplotlib.backend_kivyagg import FigureCanvasKivyAgg
@@ -105,6 +106,9 @@ MASK_CATEGORIES = {
         ("THETA_SELL", "Thetas aligned & above 9.01"),
     ],
 }
+
+# Flat list of all mask names used by the Custom Rule Builder spinner.
+ALL_MASK_NAMES = [name for cat_items in MASK_CATEGORIES.values() for name, _ in cat_items]
 
 # Per-mask colors: BUY signals = shades of green, SELL signals = shades of red
 MASK_COLORS = {
@@ -732,12 +736,38 @@ class PrototypeUI(BoxLayout):
         lc.add_widget(r)
         r, self.param_profit_target = _param_row('Profit target (%):', 0.6)
         lc.add_widget(r)
-        r, self.param_buy_window = _param_row('Buy peak window (bars):', 55)
+        r, self.param_buy_threshold = _param_row('Buy threshold (masks):', 1)
         lc.add_widget(r)
-        r, self.param_sell_window = _param_row('Sell peak window (bars):', 89)
+        r, self.param_sell_threshold = _param_row('Sell threshold (masks):', 1)
         lc.add_widget(r)
-        r, self.param_patience = _param_row('Patience bars:', 60)
+        r, self.param_buy_dom = _param_row('Buy dominance ratio:', 0.0)
         lc.add_widget(r)
+        r, self.param_sell_dom = _param_row('Sell dominance ratio:', 0.0)
+        lc.add_widget(r)
+
+        # Custom Rule Builder — add per-mask AND-logic gate conditions
+        lc.add_widget(Label(
+            text='[b]Custom Rules[/b]', markup=True,
+            size_hint_y=None, height=20, font_size=12,
+        ))
+        lc.add_widget(Label(
+            text='[mask]  [op]  [val]  [bars]',
+            size_hint_y=None, height=14, font_size=9, color=(0.7, 0.7, 0.7, 1),
+        ))
+        self._rule_rows = []
+        self._rule_container = GridLayout(cols=1, size_hint_y=None, spacing=2)
+        self._rule_container.bind(minimum_height=self._rule_container.setter('height'))
+        rule_scroll = ScrollView(size_hint_y=None, height=160)
+        rule_scroll.add_widget(self._rule_container)
+        lc.add_widget(rule_scroll)
+        rule_btn_row = BoxLayout(size_hint_y=None, height=30)
+        add_rule_btn = Button(text='+ Add Rule', size_hint_x=0.5)
+        clr_rule_btn = Button(text='Clear All', size_hint_x=0.5)
+        add_rule_btn.bind(on_press=self._add_rule_row)
+        clr_rule_btn.bind(on_press=self._clear_rules)
+        rule_btn_row.add_widget(add_rule_btn)
+        rule_btn_row.add_widget(clr_rule_btn)
+        lc.add_widget(rule_btn_row)
 
         # Run Strategy Button
         sim_button = Button(text='Run Strategy', size_hint_y=None, height=40, background_color=(0.2, 0.6, 1, 1))
@@ -859,7 +889,7 @@ class PrototypeUI(BoxLayout):
                         self.ax_price.scatter(
                             x_vals[mask_bool].values,
                             view['CURRENT_RATE'][mask_bool].values,
-                            color=color, s=15, marker='.', zorder=5, alpha=0.5
+                            color=color, s=50, marker='x', zorder=5, alpha=0.9
                         )
 
         # 7. Add legend for buy/sell signal types
@@ -920,14 +950,15 @@ class PrototypeUI(BoxLayout):
             except (ValueError, AttributeError):
                 return default
 
-        start_capital  = _pf(self.param_start_capital, 1000.0)
-        fee            = _pf(self.param_fee_pct,        0.25) / 100.0
-        profit_target  = _pf(self.param_profit_target,  0.6)
-        buy_window     = max(2, int(_pf(self.param_buy_window,   55)))
-        sell_window    = max(2, int(_pf(self.param_sell_window,  89)))
-        patience_bars  = max(1, int(_pf(self.param_patience,     60)))
+        start_capital  = _pf(self.param_start_capital,  1000.0)
+        fee            = _pf(self.param_fee_pct,          0.25) / 100.0
+        profit_target  = _pf(self.param_profit_target,    0.6)
+        buy_threshold  = max(0.0, _pf(self.param_buy_threshold,  1.0))
+        sell_threshold = max(0.0, _pf(self.param_sell_threshold, 1.0))
+        buy_dom_ratio  = max(0.0, _pf(self.param_buy_dom,        0.0))
+        sell_dom_ratio = max(0.0, _pf(self.param_sell_dom,       0.0))
 
-        # Same buy/sell mask classification used in run_simulation
+        # Buy/sell mask classification (same as run_simulation)
         BUY_MASKS = {
             "PHI_OOS_DOWN", "PHI_CROSS_UP", "PHI_TREND_UP",
             "BOOL_STD_D1", "BOOL_STD_D2", "BOOL_STD_D3",
@@ -938,146 +969,60 @@ class PrototypeUI(BoxLayout):
         }
 
         # --- Step 1: accumulate buy / sell counts per bar ---
-        buy_counts = pd.Series(0, index=view_masks.index, dtype=float)
+        buy_counts  = pd.Series(0, index=view_masks.index, dtype=float)
         sell_counts = pd.Series(0, index=view_masks.index, dtype=float)
         for mask_name in active_masks:
             if mask_name in view_masks.columns:
                 col = view_masks[mask_name].fillna(0).astype(int)
                 if mask_name in BUY_MASKS:
-                    buy_counts += col
+                    buy_counts  += col
                 else:
                     sell_counts += col
 
-        # --- Step 2: peak detection — first bar where count reaches a new local high ---
-        # We use two different Fibonacci look-back windows:
-        #   BUY_PEAK_WINDOW  (55 bars) for buy peaks  — tighter horizon keeps entries responsive
-        #   SELL_PEAK_WINDOW (89 bars) for sell peaks — wider horizon avoids premature exits
-        #
-        # How it works:
-        #   rolling().max() computes the highest count seen in the last N bars.
-        #   A peak fires when the current bar EQUALS that rolling high AND is strictly
-        #   greater than the previous bar (rising-edge condition).  The rising-edge check
-        #   means only the very FIRST bar of a plateau triggers a trade, not every bar
-        #   that stays at the plateau level.
-        rolling_max_buy  = buy_counts.rolling(buy_window,  min_periods=buy_window  // 2).max()
-        rolling_max_sell = sell_counts.rolling(sell_window, min_periods=sell_window // 2).max()
-        buy_peak  = (buy_counts  == rolling_max_buy)  & (buy_counts  > buy_counts.shift(1).fillna(0))
-        sell_peak = (sell_counts == rolling_max_sell) & (sell_counts > sell_counts.shift(1).fillna(0))
-
-        # --- Step 3: trade execution ---
+        # --- Step 2: trade execution ---
         usd = start_capital
         btc = 0.0
         position = 'USD'
         trades = []
+        avg_buy_price = None
 
         x_vals = view['TIME']
 
-        # PHI_OOS column availability — checked once, outside the trade loop.
-        # PHI_OOS (out-of-sample confirmation) is an independent signal computed on
-        # data the other indicators have NOT seen.  Requiring it as a gate keeps us
-        # from trading on in-sample noise.
-        has_phi_oos_down = 'PHI_OOS_DOWN' in view_masks.columns
-        has_phi_oos_up   = 'PHI_OOS_UP'   in view_masks.columns
-
-        # ── Patience filter ───────────────────────────────────────────────────────
-        # Goal: never buy at the EXACT bottom of a 2-minute (60-bar) capitulation dip.
-        #
-        # Why?  When price is at its rolling minimum it is still FALLING — the low
-        # has not been confirmed yet.  We want to wait 1-2 bars until the price has
-        # started to recover before committing capital.
-        #
-        # How:
-        #   price_rolling_min  — the lowest price seen in any of the last 60 bars.
-        #   at_2min_low        — True on any bar where the current price IS that low.
-        #   low_occurred_recently — True when a low was present 1 or 2 bars AGO
-        #                           (shift(1) moves the window back so the current bar
-        #                            is never counted as "recently past").
-        #   confirmed_exit_from_low — True when BOTH conditions hold:
-        #       1. We are NOT currently at the rolling low  (price has moved up)
-        #       2. A low WAS present 1-2 bars ago           (the dip just happened)
-        #   Only bars where confirmed_exit_from_low is True are allowed to buy.
-        price_rolling_min = view['CURRENT_RATE'].rolling(patience_bars, min_periods=patience_bars // 2).min()
-        at_2min_low = (view['CURRENT_RATE'] == price_rolling_min)
-        low_occurred_recently = at_2min_low.rolling(2).max().shift(1).fillna(False).astype(bool)
-        confirmed_exit_from_low = (~at_2min_low) & low_occurred_recently
-
-        # avg_buy_price tracks the price we paid on entry.
-        # Used exclusively by the profit-target check — reset to None when flat.
-        avg_buy_price = None
-
-        # ── Main trade loop ───────────────────────────────────────────────────────
-        # Each bar (i) we:
-        #   1. Read the current price and active mask counts.
-        #   2. Combine the peak-detection signal with the PHI_OOS gate.
-        #   3. Check the profit target FIRST (fast path — exits immediately).
-        #   4. Otherwise check the buy or sell condition (signal-driven path).
         for i in range(len(view)):
             price = float(view.loc[i, 'CURRENT_RATE'])
-
-            # Total number of BUY-side masks that are True on this bar.
             current_buy_count  = buy_counts.iloc[i]
-            # Total number of SELL-side masks that are True on this bar.
             current_sell_count = sell_counts.iloc[i]
 
-            # Read the out-of-sample confirmation flags for this bar.
-            # PHI_OOS_DOWN  → OOS model says market is trending DOWN  (buy dip signal)
-            # PHI_OOS_UP    → OOS model says market is trending UP     (sell peak signal)
-            # If the column doesn't exist in the mask file, default to False so trades
-            # are suppressed rather than accidentally firing on every bar.
-            phi_oos_down = bool(view_masks['PHI_OOS_DOWN'].iloc[i]) if has_phi_oos_down else False
-            phi_oos_up   = bool(view_masks['PHI_OOS_UP'].iloc[i])   if has_phi_oos_up   else False
-
-            # Final composite signals.
-            # buy_signal  = "buy-count just hit a Fibonacci-window peak"
-            #               AND "OOS model confirms a downtrend dip to buy into"
-            # sell_signal = "sell-count just hit a Fibonacci-window peak"
-            #               AND "OOS model confirms an uptrend peak to sell into"
-            buy_signal  = buy_peak.iloc[i]  and phi_oos_down
-            sell_signal = sell_peak.iloc[i] and phi_oos_up
-
-            # ── PRIORITY 1: profit target ─────────────────────────────────────────
-            # Check this BEFORE the normal signal path so a profitable position is
-            # never held past the target just because no sell peak is firing.
-            # If we're in BTC and our unrealised gain has reached PROFIT_TARGET_PCT,
-            # sell immediately and skip the rest of this bar's logic (continue).
-            if position == 'BTC' and btc > 0 and avg_buy_price is not None:
-                profit_pct = (price - avg_buy_price) / avg_buy_price * 100
-                if profit_pct >= profit_target:
-                    # Lock in the gain: convert BTC back to USD, deduct trading fee.
+            # --- Profit target (skipped when profit_target <= 0) ---
+            if (profit_target > 0 and position == 'BTC'
+                    and btc > 0 and avg_buy_price is not None):
+                if (price - avg_buy_price) / avg_buy_price * 100 >= profit_target:
                     usd = btc * price * (1.0 - fee)
                     trades.append(('SELL', i, price, usd, btc))
-                    btc = 0.0
-                    position = 'USD'
-                    avg_buy_price = None
-                    continue  # move to next bar — no further action needed this bar
+                    btc = 0.0; position = 'USD'; avg_buy_price = None
+                    continue
 
-            # ── PRIORITY 2: buy condition ─────────────────────────────────────────
-            # ALL of the following must be True to open a position:
-            #   buy_signal              — peak AND OOS confirmation (see above)
-            #   confirmed_exit_from_low — price just exited a rolling-low dip (patience)
-            #   position == 'USD'       — we must not already be in a position
-            #   usd > 0                 — we need money to spend
-            #   sell_count <= buy_count — buy-side masks DOMINATE (no counter-trend longs)
-            if (buy_signal and confirmed_exit_from_low.iloc[i]
-                    and position == 'USD' and usd > 0
-                    and current_sell_count <= current_buy_count):
-                # Convert all USD to BTC, paying the taker fee on the way in.
+            # --- Custom rule gate (AND-logic; True when no rules defined) ---
+            custom_ok = self._eval_custom_rules(i, view_masks)
+
+            # --- BUY: threshold met + dominance check + custom rules ---
+            if (current_buy_count >= buy_threshold
+                    and current_buy_count > current_sell_count * buy_dom_ratio
+                    and custom_ok
+                    and position == 'USD' and usd > 0):
                 btc = usd / (price * (1.0 + fee))
                 trades.append(('BUY', i, price, usd, btc))
-                usd = 0.0
-                position = 'BTC'
-                avg_buy_price = price  # remember entry price for profit-target tracking
+                usd = 0.0; position = 'BTC'
+                avg_buy_price = price
 
-            # ── PRIORITY 3: signal-driven sell ───────────────────────────────────
-            # Fires when a sell peak is confirmed AND we hold BTC AND sell masks dominate.
-            # This is the "normal" exit path when the profit target hasn't been hit.
-            elif (sell_signal and position == 'BTC' and btc > 0
-                    and current_buy_count <= current_sell_count):
-                # Convert all BTC back to USD, paying the taker fee on the way out.
+            # --- SELL: threshold met + dominance check + custom rules ---
+            elif (current_sell_count >= sell_threshold
+                    and current_sell_count > current_buy_count * sell_dom_ratio
+                    and custom_ok
+                    and position == 'BTC' and btc > 0):
                 usd = btc * price * (1.0 - fee)
                 trades.append(('SELL', i, price, usd, btc))
-                btc = 0.0
-                position = 'USD'
+                btc = 0.0; position = 'USD'
                 avg_buy_price = None
 
         # Force-close any open position at end of view
@@ -1085,15 +1030,14 @@ class PrototypeUI(BoxLayout):
             last_price = float(view.iloc[-1]['CURRENT_RATE'])
             usd = btc * last_price * (1.0 - fee)
             trades.append(('SELL', len(view) - 1, last_price, usd, btc))
-            btc = 0.0
-            position = 'USD'
+            btc = 0.0; position = 'USD'
             avg_buy_price = None
 
         final_usd = usd
         roi = ((final_usd - start_capital) / start_capital) * 100
         buy_trade_count = sum(1 for t in trades if t[0] == 'BUY')
 
-        # --- Step 4: draw base chart + existing visualization (dots, heat-map, bars) ---
+        # --- Step 3: draw base chart + existing visualization ---
         self.plot_all()
 
         plotted_buy = False
@@ -1112,7 +1056,7 @@ class PrototypeUI(BoxLayout):
                         self.ax_price.scatter(
                             x_vals[mask_bool].values,
                             view['CURRENT_RATE'][mask_bool].values,
-                            color=color, s=15, marker='.', zorder=5, alpha=0.5
+                            color=color, s=50, marker='x', zorder=5, alpha=0.9
                         )
 
         # Legend for mask signal types
@@ -1133,8 +1077,8 @@ class PrototypeUI(BoxLayout):
                     self.ax_price.scatter(x_pos_t, trade[2], color='red', marker='v', s=120, zorder=11, edgecolors='darkred', linewidths=0.8)
 
         # Add trade markers to legend
-        legend_elements.append(Line2D([0], [0], marker='^', color='w', markerfacecolor='lime', markeredgecolor='darkgreen', markersize=9, label='Buy (peak)'))
-        legend_elements.append(Line2D([0], [0], marker='v', color='w', markerfacecolor='red', markeredgecolor='darkred', markersize=9, label='Sell (peak)'))
+        legend_elements.append(Line2D([0], [0], marker='^', color='w', markerfacecolor='lime', markeredgecolor='darkgreen', markersize=9, label='Buy'))
+        legend_elements.append(Line2D([0], [0], marker='v', color='w', markerfacecolor='red', markeredgecolor='darkred', markersize=9, label='Sell'))
         if legend_elements:
             self.ax_price.legend(handles=legend_elements, loc='upper right', fontsize='small')
 
@@ -1180,6 +1124,58 @@ class PrototypeUI(BoxLayout):
             trade_text = f"{j + 1}. {trade[0]} bar {trade[1]} @ ${trade[2]:.2f} | {detail}"
             row_lbl = Label(text=trade_text, size_hint_y=None, height=18, font_size=10)
             self.trade_log_container.add_widget(row_lbl)
+
+    def _add_rule_row(self, instance=None):
+        """Append one editable rule row to the Custom Rule Builder."""
+        row = BoxLayout(size_hint_y=None, height=28, spacing=2)
+        mask_sp = Spinner(
+            text=ALL_MASK_NAMES[0], values=ALL_MASK_NAMES,
+            size_hint_x=0.38, font_size=9,
+        )
+        op_sp = Spinner(
+            text='>=', values=['>', '<', '=', '>=', '<='],
+            size_hint_x=0.17, font_size=10,
+        )
+        thresh_ti = TextInput(text='1', multiline=False, size_hint_x=0.22, font_size=10)
+        consec_ti = TextInput(text='1', multiline=False, size_hint_x=0.23, font_size=10)
+        row.add_widget(mask_sp)
+        row.add_widget(op_sp)
+        row.add_widget(thresh_ti)
+        row.add_widget(consec_ti)
+        self._rule_container.add_widget(row)
+        self._rule_rows.append((mask_sp, op_sp, thresh_ti, consec_ti))
+
+    def _clear_rules(self, instance=None):
+        """Remove all custom rule rows."""
+        self._rule_container.clear_widgets()
+        self._rule_rows.clear()
+
+    def _eval_custom_rules(self, bar_idx, view_masks):
+        """
+        Evaluate all custom rules for the given bar.
+        Returns True if every rule passes (or if no rules are defined).
+        Each rule: mask op threshold for consec_bars consecutive bars must all pass.
+        Rules referencing unknown masks are skipped rather than blocking trades.
+        """
+        for mask_sp, op_sp, thresh_ti, consec_ti in self._rule_rows:
+            mask_name = mask_sp.text
+            op = op_sp.text
+            try:
+                threshold   = float(thresh_ti.text)
+                consec_bars = max(1, int(float(consec_ti.text)))
+            except ValueError:
+                continue
+            if mask_name not in view_masks.columns:
+                continue  # skip rule for unknown mask; don't block trades
+            start   = max(0, bar_idx - consec_bars + 1)
+            segment = view_masks[mask_name].iloc[start:bar_idx + 1].fillna(0).astype(float)
+            for val in segment:
+                if   op == '>'  and not (val >  threshold): return False
+                elif op == '<'  and not (val <  threshold): return False
+                elif op == '='  and not (val == threshold): return False
+                elif op == '>=' and not (val >= threshold): return False
+                elif op == '<=' and not (val <= threshold): return False
+        return True
 
     def _try_load_default(self):
         try:
