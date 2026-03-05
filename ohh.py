@@ -134,7 +134,14 @@ MASK_CATEGORIES = {
 }
 
 # Flat list of all mask names used by the Custom Rule Builder spinner.
-ALL_MASK_NAMES = [name for cat_items in MASK_CATEGORIES.values() for name, _ in cat_items]
+# The three synthetic names at the top (BUY_COUNT, SELL_COUNT, DOMINANCE) are
+# handled specially in _evaluate_rule_group() — they do not correspond to
+# individual mask columns but instead represent aggregate counts/dominance.
+ALL_MASK_NAMES = [
+    "BUY_COUNT",
+    "SELL_COUNT",
+    "DOMINANCE",
+] + [name for cat_items in MASK_CATEGORIES.values() for name, _ in cat_items]
 
 # Per-mask colors: BUY signals = shades of green, SELL signals = shades of red
 MASK_COLORS = {
@@ -787,6 +794,17 @@ class PrototypeUI(BoxLayout):
             text='[b]Binary Mask Toggles (54)[/b]', markup=True,
             size_hint_y=None, height=24, font_size=13,
         ))
+        # Global all-on / all-off buttons — affect every mask at once
+        global_btn_row = BoxLayout(size_hint_y=None, height=30)
+        global_on  = Button(text='ALL ON',  size_hint_x=0.5,
+                            background_color=(0.18, 0.65, 0.18, 1))
+        global_off = Button(text='ALL OFF', size_hint_x=0.5,
+                            background_color=(0.45, 0.45, 0.45, 1))
+        global_on.bind(on_press=self._global_all_on)
+        global_off.bind(on_press=self._global_all_off)
+        global_btn_row.add_widget(global_on)
+        global_btn_row.add_widget(global_off)
+        lc.add_widget(global_btn_row)
         self.mask_switchboard = MaskSwitchboard(MASK_CATEGORIES)
         lc.add_widget(self.mask_switchboard)
 
@@ -937,6 +955,16 @@ class PrototypeUI(BoxLayout):
         else:
             self.toggle_states[toggle_id] = state
         self.debug_box.text = f"{toggle_id} set to {'ON' if state else 'OFF'}"
+
+    def _global_all_on(self, instance):
+        """Set every mask in the switchboard to ON."""
+        for mask_name in self.mask_switchboard.toggle_states:
+            self.mask_switchboard._set_mask(mask_name, True)
+
+    def _global_all_off(self, instance):
+        """Set every mask in the switchboard to OFF."""
+        for mask_name in self.mask_switchboard.toggle_states:
+            self.mask_switchboard._set_mask(mask_name, False)
 
     def run_simulation(self, instance):
         """
@@ -1256,7 +1284,14 @@ class PrototypeUI(BoxLayout):
 
         Returns True if the combined result is True (or if no rules are defined).
 
-        Patterns:
+        Special synthetic mask names (not columns in view_masks):
+          'BUY_COUNT'   – total count of active buy masks True at bar_idx.
+                          state='is ON' means count >= N; 'is OFF' means count < N.
+          'SELL_COUNT'  – total count of active sell masks True at bar_idx.
+          'DOMINANCE'   – (buy_count - sell_count). Threshold N interpreted as an
+                          integer; 'is ON' means dominance >= N; 'is OFF' means < N.
+
+        Patterns (for regular masks):
           'for N bars'       – mask state holds for N consecutive bars ending at bar_idx.
           'for N of M bars'  – mask state holds for at least N of the last M bars.
           'then OFF for M bars' – last M bars the mask is OFF (==0), AND bar M+1 ago was ON.
@@ -1266,6 +1301,35 @@ class PrototypeUI(BoxLayout):
         """
         if not rule_rows:
             return True
+
+        # Pre-compute buy/sell counts at bar_idx for synthetic rules.
+        # Pre-fetch the entire row once to avoid repeated .iloc[bar_idx] lookups.
+        _buy_count_cache  = None
+        _sell_count_cache = None
+        _bar_row_cache    = None  # entire row at bar_idx, fetched lazily
+
+        def _get_buy_sell_counts():
+            nonlocal _buy_count_cache, _sell_count_cache, _bar_row_cache
+            if _buy_count_cache is not None:
+                return _buy_count_cache, _sell_count_cache
+            if _bar_row_cache is None:
+                _bar_row_cache = view_masks.iloc[bar_idx]
+            buy_c = 0; sell_c = 0
+            active = set(self.mask_switchboard.get_active_masks())
+            for mn in active:
+                if mn in _bar_row_cache.index:
+                    try:
+                        is_on = (float(_bar_row_cache[mn]) != 0)
+                    except (TypeError, ValueError):
+                        is_on = False
+                    if is_on:
+                        if mn in BUY_MASKS:
+                            buy_c += 1
+                        else:
+                            sell_c += 1
+            _buy_count_cache = buy_c
+            _sell_count_cache = sell_c
+            return buy_c, sell_c
 
         def _satisfies_state(val, state_is_on):
             return (val != 0) if state_is_on else (val == 0)
@@ -1281,7 +1345,20 @@ class PrototypeUI(BoxLayout):
             except ValueError:
                 n, m = 1, 1
 
-            if mask_name not in view_masks.columns:
+            # --- Synthetic aggregate rules ---
+            if mask_name in ('BUY_COUNT', 'SELL_COUNT', 'DOMINANCE'):
+                buy_c, sell_c = _get_buy_sell_counts()
+                if mask_name == 'BUY_COUNT':
+                    value = buy_c
+                elif mask_name == 'SELL_COUNT':
+                    value = sell_c
+                else:  # DOMINANCE
+                    value = buy_c - sell_c
+                # 'is ON'  → value >= N threshold
+                # 'is OFF' → value < N threshold
+                result = (value >= n) if state_is_on else (value < n)
+
+            elif mask_name not in view_masks.columns:
                 result = True  # unknown mask: skip, don't block
             else:
                 col = view_masks[mask_name].fillna(0).astype(float)
@@ -1582,18 +1659,38 @@ class PrototypeUI(BoxLayout):
                 )
                 self.ax_dom.plot(np.asarray(x), dom_vals, color='#444444', linewidth=1.0)
 
-                # Consensus preview — rolling average of dominance score
+                # Consensus preview — window-based star markers on ax_dom.
+                # For each bar in the middle of the window, check if ALL active masks
+                # are True for EVERY bar in the window. A purple star is plotted where
+                # the condition holds. With window=5 this checks 5 bars (2 before,
+                # current, 2 after), i.e. ~10 seconds of data at 2-second resolution.
                 try:
-                    if self.consensus_cb.active:
+                    if self.consensus_cb.active and active_masks_pa:
                         try:
-                            win = max(2, int(float(self.consensus_window_ti.text)))
+                            win = max(1, int(float(self.consensus_window_ti.text)))
                         except (ValueError, AttributeError):
                             win = 5
-                        consensus_line = dominance.rolling(win, min_periods=1).mean()
-                        self.ax_dom.plot(
-                            np.asarray(x), consensus_line.values,
-                            color='blue', linewidth=1.5, alpha=0.8, label=f'Consensus({win})'
-                        )
+                        half_win = win // 2
+                        x_arr = np.asarray(x)
+                        legend_added = False
+                        for idx in range(half_win, len(view_masks_pa) - half_win):
+                            window_slice = view_masks_pa.iloc[idx - half_win: idx + half_win + 1]
+                            all_true = True
+                            for mn in active_masks_pa:
+                                if mn in window_slice.columns:
+                                    if not window_slice[mn].all():
+                                        all_true = False
+                                        break
+                            if all_true:
+                                lbl = 'Consensus' if not legend_added else ''
+                                # Place star at y=0.5 (midpoint of the buy-dominance zone)
+                                self.ax_dom.scatter(
+                                    x_arr[idx], 0.5,
+                                    color='purple', s=150, marker='*',
+                                    edgecolors='black', linewidths=1.5, alpha=0.9,
+                                    label=lbl, zorder=8,
+                                )
+                                legend_added = True
                 except (ValueError, AttributeError):
                     pass
 
