@@ -1,7 +1,7 @@
 """
 binary_mask_generator.py
 ========================
-Generates a binary mask DataFrame of 40 trading-signal boolean columns
+Generates a binary mask DataFrame of 54 trading-signal boolean columns
 from a 21-column indicator DataFrame produced by the oh2.py data pipeline.
 
 Each rule uses only current and historical data (no lookahead). NaN inputs
@@ -52,12 +52,23 @@ CRAP_THRESHOLD: float = 0.003105620015142
 
 # RSI extremes
 RSI_OVERSOLD_LEVEL: float = 9.01
-RSI_OVERBOUGHT_LEVEL: float = 89.99
+RSI_OVERBOUGHT_LEVEL: float = 90.99
 
 # THETA boundary shared by both THETA rules
 THETA_BOUNDARY: float = 9.01
 
-# Ordered list of the 40 output column names (matches rule numbering in spec)
+# Rolling window sizes (rows) for multi-timeframe percentile rules.
+# Assumes 2-second data cadence: rows = hours × 3600 / 2.
+WIN_5_7H: int = 10260   # 5.7 hours
+WIN_9_2H: int = 16560   # 9.2 hours
+WIN_14_8H: int = 26640  # 14.8 hours
+WIN_24H: int = 43200    # 24 hours
+
+# Percentile boundaries for bottom / top rules
+PCT_LOW: float = 0.0901   # 9.01th percentile
+PCT_HIGH: float = 0.9099  # 90.99th percentile
+
+# Ordered list of the 54 output column names (matches rule numbering in spec)
 OUTPUT_COLUMNS: list[str] = [
     # Category 1 – PHI Gates
     "PHI_OOS_UP",
@@ -74,23 +85,7 @@ OUTPUT_COLUMNS: list[str] = [
     "BOOL_STD_U1",
     "BOOL_STD_U2",
     "BOOL_STD_U3",
-    # Category 4 – CRAP Breath
-    "CRAP5_7_U",
-    "CRAP9_2_U",
-    "CRAP14_8_U",
-    "CRAP24_U",
-    "CRAP5_7_D",
-    "CRAP9_2_D",
-    "CRAP14_8_D",
-    "CRAP24_D",
-    "CRAP5_7_MU",
-    "CRAP9_2_MU",
-    "CRAP14_8_MU",
-    "CRAP24_MU",
-    "CRAP5_7_MD",
-    "CRAP9_2_MD",
-    "CRAP14_8_MD",
-    "CRAP24_MD",
+    # Category 4 – CRAP Breath (Peak / Trough only; U/D/MU/MD removed)
     "CRAP5_7_PEAK",
     "CRAP9_2_PEAK",
     "CRAP14_8_PEAK",
@@ -105,11 +100,48 @@ OUTPUT_COLUMNS: list[str] = [
     # Category 6 – THETA Spine
     "THETA_BUY",
     "THETA_SELL",
+    # --- New masks (added) ---
+    # CRAP Alignment
+    "CRAP_ALL_UP",
+    "CRAP_ALL_DOWN",
+    # PHI Crossovers (rate crossing each PHI level)
+    "PHI_CROSS_UP_5_7",
+    "PHI_CROSS_DOWN_5_7",
+    "PHI_CROSS_UP_9_2",
+    "PHI_CROSS_DOWN_9_2",
+    "PHI_CROSS_UP_14_8",
+    "PHI_CROSS_DOWN_14_8",
+    "PHI_CROSS_UP_24",
+    "PHI_CROSS_DOWN_24",
+    # Multi-Timeframe Price Percentile
+    "PRICE_BOTTOM_5H",
+    "PRICE_TOP_5H",
+    "PRICE_BOTTOM_9H",
+    "PRICE_TOP_9H",
+    "PRICE_BOTTOM_14H",
+    "PRICE_TOP_14H",
+    "PRICE_BOTTOM_24H",
+    "PRICE_TOP_24H",
+    # Extreme Price Alignment
+    "EXTREME_OVERSOLD",
+    "EXTREME_OVERBOUGHT",
+    # CRAP Percentile
+    "CRAP_BOTTOM_5H",
+    "CRAP_TOP_5H",
+    "CRAP_BOTTOM_9H",
+    "CRAP_TOP_9H",
+    "CRAP_BOTTOM_14H",
+    "CRAP_TOP_14H",
+    "CRAP_BOTTOM_24H",
+    "CRAP_TOP_24H",
+    # CRAP Extreme Alignment
+    "CRAP_EXTREME_LOW",
+    "CRAP_EXTREME_HIGH",
 ]
 
 
 class BinaryMaskGenerator:
-    """Compute 40 binary trading-signal masks from a pipeline indicator DataFrame.
+    """Compute 54 binary trading-signal masks from a pipeline indicator DataFrame.
 
     Parameters
     ----------
@@ -148,7 +180,7 @@ class BinaryMaskGenerator:
     # ------------------------------------------------------------------
 
     def generate(self) -> pd.DataFrame:
-        """Compute all 40 binary masks and return them as a DataFrame.
+        """Compute all 54 binary masks and return them as a DataFrame.
 
         The returned DataFrame shares the same index as the input DataFrame.
         Every column is of dtype ``bool`` (Python ``True`` / ``False``).
@@ -158,7 +190,7 @@ class BinaryMaskGenerator:
         Returns
         -------
         pd.DataFrame
-            Shape ``(len(df), 40)``, columns as listed in ``OUTPUT_COLUMNS``.
+            Shape ``(len(df), 54)``, columns as listed in ``OUTPUT_COLUMNS``.
         """
         df = self._df
         w = self._window
@@ -240,49 +272,16 @@ class BinaryMaskGenerator:
         bool_std_u3 = _mask(rate > std_u3)
 
         # ----------------------------------------------------------------
-        # Category 4 – CRAP Breath (Rules 13–36)
+        # Category 4 – CRAP Breath (Rules 13–20: Peak / Trough only)
+        # Note: CRAP U/D/MU/MD level and momentum rules removed as per spec.
         # ----------------------------------------------------------------
-
-        # --- Level rules (Rules 13–20): threshold crossings ---
-
-        # Rule 13: CRAP5_7_U  – upward threshold breach
-        crap5_7_u = _mask(crap5 >= CRAP_THRESHOLD)
-        # Rule 14: CRAP9_2_U
-        crap9_2_u = _mask(crap9 >= CRAP_THRESHOLD)
-        # Rule 15: CRAP14_8_U
-        crap14_8_u = _mask(crap14 >= CRAP_THRESHOLD)
-        # Rule 16: CRAP24_U
-        crap24_u = _mask(crap24 >= CRAP_THRESHOLD)
-
-        # Rule 17: CRAP5_7_D  – downward threshold breach
-        crap5_7_d = _mask(crap5 <= -CRAP_THRESHOLD)
-        # Rule 18: CRAP9_2_D
-        crap9_2_d = _mask(crap9 <= -CRAP_THRESHOLD)
-        # Rule 19: CRAP14_8_D
-        crap14_8_d = _mask(crap14 <= -CRAP_THRESHOLD)
-        # Rule 20: CRAP24_D
-        crap24_d = _mask(crap24 <= -CRAP_THRESHOLD)
-
-        # --- Momentum rules (Rules 21–28): direction of change ---
 
         crap5_prev = crap5.shift(1)
         crap9_prev = crap9.shift(1)
         crap14_prev = crap14.shift(1)
         crap24_prev = crap24.shift(1)
 
-        # Rules 21–24: rising momentum
-        crap5_7_mu = _mask(crap5 > crap5_prev)
-        crap9_2_mu = _mask(crap9 > crap9_prev)
-        crap14_8_mu = _mask(crap14 > crap14_prev)
-        crap24_mu = _mask(crap24 > crap24_prev)
-
-        # Rules 25–28: falling momentum
-        crap5_7_md = _mask(crap5 < crap5_prev)
-        crap9_2_md = _mask(crap9 < crap9_prev)
-        crap14_8_md = _mask(crap14 < crap14_prev)
-        crap24_md = _mask(crap24 < crap24_prev)
-
-        # --- Peak / Trough rules (Rules 29–36): 60-bar rolling window ---
+        # --- Peak / Trough rules: 60-bar rolling window ---
         # min_periods=window ensures False (not True) when history is short.
 
         roll5 = crap5.rolling(w, min_periods=w)
@@ -290,13 +289,13 @@ class BinaryMaskGenerator:
         roll14 = crap14.rolling(w, min_periods=w)
         roll24 = crap24.rolling(w, min_periods=w)
 
-        # Rules 29–32: at rolling maximum AND still rising
+        # At rolling maximum AND still rising
         crap5_7_peak = _mask((crap5 >= roll5.max()) & (crap5 > crap5_prev))
         crap9_2_peak = _mask((crap9 >= roll9.max()) & (crap9 > crap9_prev))
         crap14_8_peak = _mask((crap14 >= roll14.max()) & (crap14 > crap14_prev))
         crap24_peak = _mask((crap24 >= roll24.max()) & (crap24 > crap24_prev))
 
-        # Rules 33–36: at rolling minimum AND still falling
+        # At rolling minimum AND still falling
         crap5_7_trough = _mask((crap5 <= roll5.min()) & (crap5 < crap5_prev))
         crap9_2_trough = _mask((crap9 <= roll9.min()) & (crap9 < crap9_prev))
         crap14_8_trough = _mask((crap14 <= roll14.min()) & (crap14 < crap14_prev))
@@ -309,7 +308,7 @@ class BinaryMaskGenerator:
         # Rule 37: RSI_OVERSOLD – both RSI lines below 9.01
         rsi_oversold = _mask((rsi34 < RSI_OVERSOLD_LEVEL) & (rsi21 < RSI_OVERSOLD_LEVEL))
 
-        # Rule 38: RSI_OVERBOUGHT – both RSI lines above 89.99
+        # Rule 38: RSI_OVERBOUGHT – both RSI lines above 90.99
         rsi_overbought = _mask((rsi34 > RSI_OVERBOUGHT_LEVEL) & (rsi21 > RSI_OVERBOUGHT_LEVEL))
 
         # ----------------------------------------------------------------
@@ -351,39 +350,114 @@ class BinaryMaskGenerator:
         # Rule 40: THETA_SELL – ordered alignment while all values are overbought
         theta_sell = _mask(theta_ordered & theta_all_high)
 
+        # ================================================================
+        # New masks
+        # ================================================================
+
+        # ----------------------------------------------------------------
+        # CRAP Alignment
+        # ----------------------------------------------------------------
+
+        # CRAP_ALL_UP: CRAP values in perfect ascending order (5_7 < 9_2 < 14_8 < 24)
+        crap_all_up = _mask((crap5 < crap9) & (crap9 < crap14) & (crap14 < crap24))
+
+        # CRAP_ALL_DOWN: CRAP values in perfect descending order (5_7 > 9_2 > 14_8 > 24)
+        crap_all_down = _mask((crap5 > crap9) & (crap9 > crap14) & (crap14 > crap24))
+
+        # ----------------------------------------------------------------
+        # PHI Crossovers – rate crossing each individual PHI level
+        # ----------------------------------------------------------------
+
+        rate_prev = rate.shift(1)
+        phi9_prev = phi9.shift(1)
+        phi14_prev = phi14.shift(1)
+        # phi5_prev and phi24_prev are already defined above
+
+        phi_cross_up_5_7 = _mask((rate >= phi5) & (rate_prev < phi5_prev))
+        phi_cross_down_5_7 = _mask((rate <= phi5) & (rate_prev > phi5_prev))
+
+        phi_cross_up_9_2 = _mask((rate >= phi9) & (rate_prev < phi9_prev))
+        phi_cross_down_9_2 = _mask((rate <= phi9) & (rate_prev > phi9_prev))
+
+        phi_cross_up_14_8 = _mask((rate >= phi14) & (rate_prev < phi14_prev))
+        phi_cross_down_14_8 = _mask((rate <= phi14) & (rate_prev > phi14_prev))
+
+        phi_cross_up_24 = _mask((rate >= phi24) & (rate_prev < phi24_prev))
+        phi_cross_down_24 = _mask((rate <= phi24) & (rate_prev > phi24_prev))
+
+        # ----------------------------------------------------------------
+        # Multi-Timeframe Price Percentile
+        # ----------------------------------------------------------------
+
+        pq5 = rate.rolling(WIN_5_7H, min_periods=WIN_5_7H)
+        pq9 = rate.rolling(WIN_9_2H, min_periods=WIN_9_2H)
+        pq14 = rate.rolling(WIN_14_8H, min_periods=WIN_14_8H)
+        pq24 = rate.rolling(WIN_24H, min_periods=WIN_24H)
+
+        price_bottom_5h = _mask(rate <= pq5.quantile(PCT_LOW))
+        price_top_5h = _mask(rate >= pq5.quantile(PCT_HIGH))
+        price_bottom_9h = _mask(rate <= pq9.quantile(PCT_LOW))
+        price_top_9h = _mask(rate >= pq9.quantile(PCT_HIGH))
+        price_bottom_14h = _mask(rate <= pq14.quantile(PCT_LOW))
+        price_top_14h = _mask(rate >= pq14.quantile(PCT_HIGH))
+        price_bottom_24h = _mask(rate <= pq24.quantile(PCT_LOW))
+        price_top_24h = _mask(rate >= pq24.quantile(PCT_HIGH))
+
+        # Extreme Price Alignment
+        extreme_oversold = _mask(
+            price_bottom_5h & price_bottom_9h & price_bottom_14h & price_bottom_24h
+        )
+        extreme_overbought = _mask(
+            price_top_5h & price_top_9h & price_top_14h & price_top_24h
+        )
+
+        # ----------------------------------------------------------------
+        # CRAP Percentile (uses crap24 series across each time window)
+        # ----------------------------------------------------------------
+
+        cq5 = crap24.rolling(WIN_5_7H, min_periods=WIN_5_7H)
+        cq9 = crap24.rolling(WIN_9_2H, min_periods=WIN_9_2H)
+        cq14 = crap24.rolling(WIN_14_8H, min_periods=WIN_14_8H)
+        cq24 = crap24.rolling(WIN_24H, min_periods=WIN_24H)
+
+        crap_bottom_5h = _mask(crap24 <= cq5.quantile(PCT_LOW))
+        crap_top_5h = _mask(crap24 >= cq5.quantile(PCT_HIGH))
+        crap_bottom_9h = _mask(crap24 <= cq9.quantile(PCT_LOW))
+        crap_top_9h = _mask(crap24 >= cq9.quantile(PCT_HIGH))
+        crap_bottom_14h = _mask(crap24 <= cq14.quantile(PCT_LOW))
+        crap_top_14h = _mask(crap24 >= cq14.quantile(PCT_HIGH))
+        crap_bottom_24h = _mask(crap24 <= cq24.quantile(PCT_LOW))
+        crap_top_24h = _mask(crap24 >= cq24.quantile(PCT_HIGH))
+
+        # CRAP Extreme Alignment
+        crap_extreme_low = _mask(
+            crap_bottom_5h & crap_bottom_9h & crap_bottom_14h & crap_bottom_24h
+        )
+        crap_extreme_high = _mask(
+            crap_top_5h & crap_top_9h & crap_top_14h & crap_top_24h
+        )
+
         # ----------------------------------------------------------------
         # Assemble result DataFrame
         # ----------------------------------------------------------------
         result = pd.DataFrame(
             {
+                # Category 1 – PHI Gates
                 "PHI_OOS_UP": phi_oos_up,
                 "PHI_OOS_DOWN": phi_oos_down,
+                # Category 2 – PHI Cross / Trend
                 "PHI_CROSS_UP": phi_cross_up,
                 "PHI_CROSS_DOWN": phi_cross_down,
                 "PHI_TREND_UP": phi_trend_up,
                 "PHI_TREND_DOWN": phi_trend_down,
+                # Category 3 – Bollinger Walls
                 "BOOL_STD_D1": bool_std_d1,
                 "BOOL_STD_D2": bool_std_d2,
                 "BOOL_STD_D3": bool_std_d3,
                 "BOOL_STD_U1": bool_std_u1,
                 "BOOL_STD_U2": bool_std_u2,
                 "BOOL_STD_U3": bool_std_u3,
-                "CRAP5_7_U": crap5_7_u,
-                "CRAP9_2_U": crap9_2_u,
-                "CRAP14_8_U": crap14_8_u,
-                "CRAP24_U": crap24_u,
-                "CRAP5_7_D": crap5_7_d,
-                "CRAP9_2_D": crap9_2_d,
-                "CRAP14_8_D": crap14_8_d,
-                "CRAP24_D": crap24_d,
-                "CRAP5_7_MU": crap5_7_mu,
-                "CRAP9_2_MU": crap9_2_mu,
-                "CRAP14_8_MU": crap14_8_mu,
-                "CRAP24_MU": crap24_mu,
-                "CRAP5_7_MD": crap5_7_md,
-                "CRAP9_2_MD": crap9_2_md,
-                "CRAP14_8_MD": crap14_8_md,
-                "CRAP24_MD": crap24_md,
+                # Category 4 – CRAP Breath (Peak / Trough only)
                 "CRAP5_7_PEAK": crap5_7_peak,
                 "CRAP9_2_PEAK": crap9_2_peak,
                 "CRAP14_8_PEAK": crap14_8_peak,
@@ -392,10 +466,48 @@ class BinaryMaskGenerator:
                 "CRAP9_2_TROUGH": crap9_2_trough,
                 "CRAP14_8_TROUGH": crap14_8_trough,
                 "CRAP24_TROUGH": crap24_trough,
+                # Category 5 – RSI Pulse
                 "RSI_OVERSOLD": rsi_oversold,
                 "RSI_OVERBOUGHT": rsi_overbought,
+                # Category 6 – THETA Spine
                 "THETA_BUY": theta_buy,
                 "THETA_SELL": theta_sell,
+                # New: CRAP Alignment
+                "CRAP_ALL_UP": crap_all_up,
+                "CRAP_ALL_DOWN": crap_all_down,
+                # New: PHI Crossovers (rate vs each PHI level)
+                "PHI_CROSS_UP_5_7": phi_cross_up_5_7,
+                "PHI_CROSS_DOWN_5_7": phi_cross_down_5_7,
+                "PHI_CROSS_UP_9_2": phi_cross_up_9_2,
+                "PHI_CROSS_DOWN_9_2": phi_cross_down_9_2,
+                "PHI_CROSS_UP_14_8": phi_cross_up_14_8,
+                "PHI_CROSS_DOWN_14_8": phi_cross_down_14_8,
+                "PHI_CROSS_UP_24": phi_cross_up_24,
+                "PHI_CROSS_DOWN_24": phi_cross_down_24,
+                # New: Multi-Timeframe Price Percentile
+                "PRICE_BOTTOM_5H": price_bottom_5h,
+                "PRICE_TOP_5H": price_top_5h,
+                "PRICE_BOTTOM_9H": price_bottom_9h,
+                "PRICE_TOP_9H": price_top_9h,
+                "PRICE_BOTTOM_14H": price_bottom_14h,
+                "PRICE_TOP_14H": price_top_14h,
+                "PRICE_BOTTOM_24H": price_bottom_24h,
+                "PRICE_TOP_24H": price_top_24h,
+                # New: Extreme Price Alignment
+                "EXTREME_OVERSOLD": extreme_oversold,
+                "EXTREME_OVERBOUGHT": extreme_overbought,
+                # New: CRAP Percentile
+                "CRAP_BOTTOM_5H": crap_bottom_5h,
+                "CRAP_TOP_5H": crap_top_5h,
+                "CRAP_BOTTOM_9H": crap_bottom_9h,
+                "CRAP_TOP_9H": crap_top_9h,
+                "CRAP_BOTTOM_14H": crap_bottom_14h,
+                "CRAP_TOP_14H": crap_top_14h,
+                "CRAP_BOTTOM_24H": crap_bottom_24h,
+                "CRAP_TOP_24H": crap_top_24h,
+                # New: CRAP Extreme Alignment
+                "CRAP_EXTREME_LOW": crap_extreme_low,
+                "CRAP_EXTREME_HIGH": crap_extreme_high,
             },
             index=df.index,
         )
@@ -519,18 +631,27 @@ def _load_df(path: str) -> pd.DataFrame:
 
 if __name__ == "__main__":
     import sqlite3
-    # Load your indicators
-    conn = sqlite3.connect("indicators2.sqlite")
+    import sys
+    from pathlib import Path
+
+    if len(sys.argv) > 1:
+        input_path = sys.argv[1]
+    else:
+        input_path = "indicators2.sqlite"
+
+    # Load indicators
+    conn = sqlite3.connect(input_path)
     df = pd.read_sql_query("SELECT * FROM indicators ORDER BY TIME", conn)
     conn.close()
-    
-    # Create the generator
+
+    # Generate masks
     gen = BinaryMaskGenerator(df)
-    
-    # Generate the masks
     masks = gen.generate()
-    
-    # Save them
-    gen.save("masks.sqlite")
-    
-    print("Masks created successfully!")
+
+    # Create output filename based on input
+    input_file = Path(input_path)
+    output_file = input_file.parent / f"{input_file.stem}_masks.sqlite"
+
+    # Save
+    gen.save(str(output_file))
+    print(f"Masks created successfully at {output_file}")
