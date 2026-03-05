@@ -51,17 +51,27 @@ SELL_PEAK_WINDOW = 89   # bars looked back to confirm a sell-count peak
 BUY_MARKER='s'; SELL_MARKER='o'
 PRICE_COLOR='#000000'
 
-# Binary mask categories for the switchboard UI
+# Binary mask categories for the switchboard UI (54 masks matching aa.py)
 MASK_CATEGORIES = {
     "PHI Gates (2)": [
-        ("PHI_OOS_UP", "Price above all PHI values"),
+        ("PHI_OOS_UP",   "Price above all PHI values"),
         ("PHI_OOS_DOWN", "Price below all PHI values"),
     ],
     "PHI Cross/Trend (4)": [
-        ("PHI_CROSS_UP", "Short PHI crossed above long PHI"),
+        ("PHI_CROSS_UP",   "Short PHI crossed above long PHI"),
         ("PHI_CROSS_DOWN", "Short PHI crossed below long PHI"),
-        ("PHI_TREND_UP", "All PHI values ascending"),
+        ("PHI_TREND_UP",   "All PHI values ascending"),
         ("PHI_TREND_DOWN", "All PHI values descending"),
+    ],
+    "PHI Crossovers (8)": [
+        ("PHI_CROSS_UP_5_7",    "Price crossed above PHI_5_7"),
+        ("PHI_CROSS_DOWN_5_7",  "Price crossed below PHI_5_7"),
+        ("PHI_CROSS_UP_9_2",    "Price crossed above PHI_9_2"),
+        ("PHI_CROSS_DOWN_9_2",  "Price crossed below PHI_9_2"),
+        ("PHI_CROSS_UP_14_8",   "Price crossed above PHI_14_8"),
+        ("PHI_CROSS_DOWN_14_8", "Price crossed below PHI_14_8"),
+        ("PHI_CROSS_UP_24",     "Price crossed above PHI_24"),
+        ("PHI_CROSS_DOWN_24",   "Price crossed below PHI_24"),
     ],
     "Bollinger Walls (6)": [
         ("BOOL_STD_D1", "Price below first lower band"),
@@ -71,23 +81,7 @@ MASK_CATEGORIES = {
         ("BOOL_STD_U2", "Price above second upper band"),
         ("BOOL_STD_U3", "Price above third upper band"),
     ],
-    "CRAP Breath (24)": [
-        ("CRAP5_7_U",      "CRAP_5_7 above +threshold"),
-        ("CRAP9_2_U",      "CRAP_9_2 above +threshold"),
-        ("CRAP14_8_U",     "CRAP_14_8 above +threshold"),
-        ("CRAP24_U",       "CRAP_24 above +threshold"),
-        ("CRAP5_7_D",      "CRAP_5_7 below -threshold"),
-        ("CRAP9_2_D",      "CRAP_9_2 below -threshold"),
-        ("CRAP14_8_D",     "CRAP_14_8 below -threshold"),
-        ("CRAP24_D",       "CRAP_24 below -threshold"),
-        ("CRAP5_7_MU",     "CRAP_5_7 increasing"),
-        ("CRAP9_2_MU",     "CRAP_9_2 increasing"),
-        ("CRAP14_8_MU",    "CRAP_14_8 increasing"),
-        ("CRAP24_MU",      "CRAP_24 increasing"),
-        ("CRAP5_7_MD",     "CRAP_5_7 decreasing"),
-        ("CRAP9_2_MD",     "CRAP_9_2 decreasing"),
-        ("CRAP14_8_MD",    "CRAP_14_8 decreasing"),
-        ("CRAP24_MD",      "CRAP_24 decreasing"),
+    "CRAP Peak/Trough (8)": [
         ("CRAP5_7_PEAK",   "CRAP_5_7 at 2-min peak"),
         ("CRAP9_2_PEAK",   "CRAP_9_2 at 2-min peak"),
         ("CRAP14_8_PEAK",  "CRAP_14_8 at 2-min peak"),
@@ -97,9 +91,41 @@ MASK_CATEGORIES = {
         ("CRAP14_8_TROUGH","CRAP_14_8 at 2-min trough"),
         ("CRAP24_TROUGH",  "CRAP_24 at 2-min trough"),
     ],
+    "CRAP Alignment (2)": [
+        ("CRAP_ALL_UP",   "All CRAP values ascending"),
+        ("CRAP_ALL_DOWN", "All CRAP values descending"),
+    ],
+    "Price Percentile (8)": [
+        ("PRICE_BOTTOM_5H",  "Price ≤ 9.01th %ile of last 5.7h"),
+        ("PRICE_TOP_5H",     "Price ≥ 90.99th %ile of last 5.7h"),
+        ("PRICE_BOTTOM_9H",  "Price ≤ 9.01th %ile of last 9.2h"),
+        ("PRICE_TOP_9H",     "Price ≥ 90.99th %ile of last 9.2h"),
+        ("PRICE_BOTTOM_14H", "Price ≤ 9.01th %ile of last 14.8h"),
+        ("PRICE_TOP_14H",    "Price ≥ 90.99th %ile of last 14.8h"),
+        ("PRICE_BOTTOM_24H", "Price ≤ 9.01th %ile of last 24h"),
+        ("PRICE_TOP_24H",    "Price ≥ 90.99th %ile of last 24h"),
+    ],
+    "Price Extreme (2)": [
+        ("EXTREME_OVERSOLD",   "Price bottom 9.01%ile all timeframes"),
+        ("EXTREME_OVERBOUGHT", "Price top 90.99%ile all timeframes"),
+    ],
+    "CRAP Percentile (8)": [
+        ("CRAP_BOTTOM_5H",  "CRAP_24 ≤ 9.01th %ile of last 5.7h"),
+        ("CRAP_TOP_5H",     "CRAP_24 ≥ 90.99th %ile of last 5.7h"),
+        ("CRAP_BOTTOM_9H",  "CRAP_24 ≤ 9.01th %ile of last 9.2h"),
+        ("CRAP_TOP_9H",     "CRAP_24 ≥ 90.99th %ile of last 9.2h"),
+        ("CRAP_BOTTOM_14H", "CRAP_24 ≤ 9.01th %ile of last 14.8h"),
+        ("CRAP_TOP_14H",    "CRAP_24 ≥ 90.99th %ile of last 14.8h"),
+        ("CRAP_BOTTOM_24H", "CRAP_24 ≤ 9.01th %ile of last 24h"),
+        ("CRAP_TOP_24H",    "CRAP_24 ≥ 90.99th %ile of last 24h"),
+    ],
+    "CRAP Extreme (2)": [
+        ("CRAP_EXTREME_LOW",  "CRAP bottom 9.01%ile all timeframes"),
+        ("CRAP_EXTREME_HIGH", "CRAP top 90.99%ile all timeframes"),
+    ],
     "RSI Pulse (2)": [
         ("RSI_OVERSOLD",   "Both RSIs below 9.01"),
-        ("RSI_OVERBOUGHT", "Both RSIs above 89.99"),
+        ("RSI_OVERBOUGHT", "Both RSIs above 90.99"),
     ],
     "THETA Spine (2)": [
         ("THETA_BUY",  "Thetas aligned & below 9.01"),
@@ -170,15 +196,65 @@ MASK_COLORS = {
     "RSI_OVERBOUGHT":  "#FF0055",   # hot red
     # THETA Spine (Sell)
     "THETA_SELL":      "#A50000",   # very dark red
+    # PHI Crossovers (Buy = green, Sell = red)
+    "PHI_CROSS_UP_5_7":    "#00CC55",
+    "PHI_CROSS_DOWN_5_7":  "#CC1100",
+    "PHI_CROSS_UP_9_2":    "#00BB66",
+    "PHI_CROSS_DOWN_9_2":  "#DD1100",
+    "PHI_CROSS_UP_14_8":   "#00AA77",
+    "PHI_CROSS_DOWN_14_8": "#EE1100",
+    "PHI_CROSS_UP_24":     "#009988",
+    "PHI_CROSS_DOWN_24":   "#FF1100",
+    # CRAP Alignment (Down = oversold/buy, Up = overbought/sell)
+    "CRAP_ALL_DOWN": "#55CC00",
+    "CRAP_ALL_UP":   "#CC5500",
+    # Price Percentile (Bottom = buy/green, Top = sell/red)
+    "PRICE_BOTTOM_5H":  "#AAFF00",
+    "PRICE_BOTTOM_9H":  "#BBFF00",
+    "PRICE_BOTTOM_14H": "#CCEE00",
+    "PRICE_BOTTOM_24H": "#DDDD00",
+    "PRICE_TOP_5H":     "#FF5500",
+    "PRICE_TOP_9H":     "#FF6600",
+    "PRICE_TOP_14H":    "#FF7700",
+    "PRICE_TOP_24H":    "#FF8800",
+    # Price Extreme
+    "EXTREME_OVERSOLD":   "#00FF44",
+    "EXTREME_OVERBOUGHT": "#FF0044",
+    # CRAP Percentile (Bottom = buy/green, Top = sell/red)
+    "CRAP_BOTTOM_5H":  "#88CC44",
+    "CRAP_BOTTOM_9H":  "#99CC44",
+    "CRAP_BOTTOM_14H": "#AACC44",
+    "CRAP_BOTTOM_24H": "#BBCC44",
+    "CRAP_TOP_5H":     "#CC4488",
+    "CRAP_TOP_9H":     "#CC4499",
+    "CRAP_TOP_14H":    "#CC44AA",
+    "CRAP_TOP_24H":    "#CC44BB",
+    # CRAP Extreme
+    "CRAP_EXTREME_LOW":  "#44FF88",
+    "CRAP_EXTREME_HIGH": "#FF4488",
 }
 
 # Buy-side mask names used for legend bucketing and dot colouring
 BUY_MASKS = {
+    # PHI gates / cross / trend (buy side)
     "PHI_OOS_DOWN", "PHI_CROSS_UP", "PHI_TREND_UP",
+    # PHI crossovers (buy side)
+    "PHI_CROSS_UP_5_7", "PHI_CROSS_UP_9_2", "PHI_CROSS_UP_14_8", "PHI_CROSS_UP_24",
+    # Bollinger (buy side)
     "BOOL_STD_D1", "BOOL_STD_D2", "BOOL_STD_D3",
-    "CRAP5_7_D", "CRAP9_2_D", "CRAP14_8_D", "CRAP24_D",
+    # CRAP troughs (buy side)
     "CRAP5_7_TROUGH", "CRAP9_2_TROUGH", "CRAP14_8_TROUGH", "CRAP24_TROUGH",
-    "CRAP5_7_MU", "CRAP9_2_MU", "CRAP14_8_MU", "CRAP24_MU",
+    # CRAP alignment (descending = oversold)
+    "CRAP_ALL_DOWN",
+    # Price percentile bottoms (buy side)
+    "PRICE_BOTTOM_5H", "PRICE_BOTTOM_9H", "PRICE_BOTTOM_14H", "PRICE_BOTTOM_24H",
+    # Price extreme (buy side)
+    "EXTREME_OVERSOLD",
+    # CRAP percentile bottoms (buy side)
+    "CRAP_BOTTOM_5H", "CRAP_BOTTOM_9H", "CRAP_BOTTOM_14H", "CRAP_BOTTOM_24H",
+    # CRAP extreme (buy side)
+    "CRAP_EXTREME_LOW",
+    # RSI / THETA (buy side)
     "RSI_OVERSOLD", "THETA_BUY",
 }
 
@@ -706,9 +782,9 @@ class PrototypeUI(BoxLayout):
         self.page_input.bind(on_text_validate=self.update_page_size)
         ps_row.add_widget(self.page_input); lc.add_widget(ps_row)
 
-        # --- Binary Mask Switchboard (replaces Feature 1 / Feature 2) ---
+        # --- Binary Mask Switchboard (54 masks) ---
         lc.add_widget(Label(
-            text='[b]Binary Mask Toggles (40)[/b]', markup=True,
+            text='[b]Binary Mask Toggles (54)[/b]', markup=True,
             size_hint_y=None, height=24, font_size=13,
         ))
         self.mask_switchboard = MaskSwitchboard(MASK_CATEGORIES)
@@ -746,6 +822,21 @@ class PrototypeUI(BoxLayout):
         lc.add_widget(r)
         r, self.param_profit_target = _param_row('Profit target (%):', 0.6)
         lc.add_widget(r)
+
+        # --- Consensus Preview Mode ---
+        lc.add_widget(Label(
+            text='[b]Consensus Preview[/b]', markup=True,
+            size_hint_y=None, height=20, font_size=12,
+        ))
+        consensus_row = BoxLayout(size_hint_y=None, height=28)
+        self.consensus_cb = CheckBox(active=False, size_hint_x=0.15)
+        consensus_row.add_widget(self.consensus_cb)
+        consensus_row.add_widget(Label(text='Enable', size_hint_x=0.35, font_size=11))
+        consensus_row.add_widget(Label(text='Window:', size_hint_x=0.3, font_size=11))
+        self.consensus_window_ti = TextInput(text='5', multiline=False,
+                                             size_hint_x=0.2, font_size=11)
+        consensus_row.add_widget(self.consensus_window_ti)
+        lc.add_widget(consensus_row)
 
         # --- Buy Rules ---
         lc.add_widget(Label(
@@ -818,9 +909,12 @@ class PrototypeUI(BoxLayout):
 
         left.clear_widgets(); left.add_widget(lc); self.add_widget(left)
 
-        # Right plots
+        # Right plots — 4 panels: price, buy count, sell count, dominance
         right = BoxLayout(orientation='vertical')
-        self.fig, (self.ax_price, self.ax_buy, self.ax_sell) = plt.subplots(3, 1, sharex=True, figsize=(12, 8), gridspec_kw={'height_ratios': [3, 1, 1]})
+        self.fig, (self.ax_price, self.ax_buy, self.ax_sell, self.ax_dom) = plt.subplots(
+            4, 1, sharex=True, figsize=(12, 10),
+            gridspec_kw={'height_ratios': [3, 1, 1, 1]}
+        )
         self.canvas_widget = FigureCanvasKivyAgg(self.fig)
         right.add_widget(self.canvas_widget)
         self.add_widget(right)
@@ -902,7 +996,7 @@ class PrototypeUI(BoxLayout):
                         self.ax_price.scatter(
                             x_vals[mask_bool].values,
                             view['CURRENT_RATE'][mask_bool].values,
-                            color=color, s=50, marker='x', zorder=5, alpha=0.9
+                            color=color, s=80, marker='x', zorder=5, alpha=1.0, linewidths=2
                         )
 
         # 7. Add legend for buy/sell signal types
@@ -1035,7 +1129,7 @@ class PrototypeUI(BoxLayout):
                         self.ax_price.scatter(
                             x_vals[mask_bool].values,
                             view['CURRENT_RATE'][mask_bool].values,
-                            color=color, s=50, marker='x', zorder=5, alpha=0.9
+                            color=color, s=80, marker='x', zorder=5, alpha=1.0, linewidths=2
                         )
 
         # Legend for mask signal types
@@ -1255,9 +1349,9 @@ class PrototypeUI(BoxLayout):
             self.status_label.text = f"Loaded: {path}"
             self.rows_label.text = f"Rows: {len(df)}"
 
-            # --- Load companion mask file (masks.sqlite) ---
-            # Look for masks.sqlite in the same directory as the indicator file.
-            mask_path = os.path.join(os.path.dirname(path), 'masks.sqlite')
+            # --- Load companion mask file with smart naming ---
+            # Derive the mask file path by replacing .sqlite with _masks.sqlite
+            mask_path = path.replace('.sqlite', '_masks.sqlite')
             if os.path.exists(mask_path):
                 # Read all mask rows from the masks table in masks.sqlite.
                 # Use a context manager so the connection is always closed cleanly.
@@ -1380,7 +1474,7 @@ class PrototypeUI(BoxLayout):
 
 
         # clear axes
-        self.ax_price.clear(); self.ax_buy.clear(); self.ax_sell.clear()
+        self.ax_price.clear(); self.ax_buy.clear(); self.ax_sell.clear(); self.ax_dom.clear()
 
         # FIXED: UPDATED COLORS FOR BOLLINGER BANDS - More visible, progressive blues
         CLOUD_COLORS = [
@@ -1448,52 +1542,60 @@ class PrototypeUI(BoxLayout):
 
         self.ax_price.set_ylabel('Price'); self.ax_price.grid(True)
 
-        # Buy/Sell count panels — plot active mask counts with Fibonacci rolling averages.
+        # Buy/Sell count panels — raw counts only (no moving averages).
+        # Uses the module-level BUY_MASKS constant for classification.
         # If mask data is not yet loaded, the panels render empty with correct labels/grid.
-        BUY_MASKS_SET = {
-            "PHI_OOS_DOWN", "PHI_CROSS_UP", "PHI_TREND_UP",
-            "BOOL_STD_D1", "BOOL_STD_D2", "BOOL_STD_D3",
-            "CRAP5_7_D", "CRAP9_2_D", "CRAP14_8_D", "CRAP24_D",
-            "CRAP5_7_TROUGH", "CRAP9_2_TROUGH", "CRAP14_8_TROUGH", "CRAP24_TROUGH",
-            "CRAP5_7_MU", "CRAP9_2_MU", "CRAP14_8_MU", "CRAP24_MU",
-            "RSI_OVERSOLD", "THETA_BUY",
-        }
+        buy_counts_pa  = pd.Series(dtype=float)
+        sell_counts_pa = pd.Series(dtype=float)
         if self.masks_df is not None:
             view_masks_pa = self.masks_df.iloc[s:e].reset_index(drop=True)
             if len(view_masks_pa) == len(view):
                 active_masks_pa = set(self.mask_switchboard.get_active_masks())
-                buy_counts_pa = pd.Series(0, index=view_masks_pa.index, dtype=float)
+                buy_counts_pa  = pd.Series(0, index=view_masks_pa.index, dtype=float)
                 sell_counts_pa = pd.Series(0, index=view_masks_pa.index, dtype=float)
                 for mask_name in active_masks_pa:
                     if mask_name in view_masks_pa.columns:
                         col = view_masks_pa[mask_name].fillna(0).astype(int)
-                        if mask_name in BUY_MASKS_SET:
+                        if mask_name in BUY_MASKS:
                             buy_counts_pa += col
                         else:
                             sell_counts_pa += col
 
-                # Four distinct-colored Fibonacci MAs — same periods/colors on both panels
-                # so each line is immediately identifiable regardless of panel.
-                PANEL_AVERAGES = [
-                    (144,  '#800080'),  # Purple
-                    (377,  '#FFD700'),  # Gold
-                    (987,  '#008080'),  # Teal
-                    (1597, '#000000'),  # Black
-                ]
-
-                # Panel A: Buy signal counts
+                # Panel A: Buy signal counts (raw only — no moving averages)
                 self.ax_buy.plot(x, buy_counts_pa.values, color='darkgreen', linewidth=1.5, label='Buy Count')
-                for period, color in PANEL_AVERAGES:
-                    if len(buy_counts_pa) >= period // 2:
-                        ma = buy_counts_pa.rolling(period, min_periods=period // 2).mean()
-                        self.ax_buy.plot(x, ma.values, color=color, linewidth=1, alpha=0.7, label=f'{period}-MA')
 
-                # Panel B: Sell signal counts
+                # Panel B: Sell signal counts (raw only — no moving averages)
                 self.ax_sell.plot(x, sell_counts_pa.values, color='darkred', linewidth=1.5, label='Sell Count')
-                for period, color in PANEL_AVERAGES:
-                    if len(sell_counts_pa) >= period // 2:
-                        ma = sell_counts_pa.rolling(period, min_periods=period // 2).mean()
-                        self.ax_sell.plot(x, ma.values, color=color, linewidth=1, alpha=0.7, label=f'{period}-MA')
+
+                # Panel C: Dominance graph — (buy - sell) / max(total, 1) in [-1, +1]
+                total = buy_counts_pa + sell_counts_pa
+                dominance = (buy_counts_pa - sell_counts_pa) / total.clip(lower=1)
+                dom_vals = dominance.values
+                self.ax_dom.axhline(0, color='black', linewidth=0.8, linestyle='--')
+                self.ax_dom.fill_between(
+                    np.asarray(x), 0, dom_vals,
+                    where=(dom_vals >= 0), color='#228B22', alpha=0.5, label='Buy Dom'
+                )
+                self.ax_dom.fill_between(
+                    np.asarray(x), 0, dom_vals,
+                    where=(dom_vals < 0), color='#CC0000', alpha=0.5, label='Sell Dom'
+                )
+                self.ax_dom.plot(np.asarray(x), dom_vals, color='#444444', linewidth=1.0)
+
+                # Consensus preview — rolling average of dominance score
+                try:
+                    if self.consensus_cb.active:
+                        try:
+                            win = max(2, int(float(self.consensus_window_ti.text)))
+                        except (ValueError, AttributeError):
+                            win = 5
+                        consensus_line = dominance.rolling(win, min_periods=1).mean()
+                        self.ax_dom.plot(
+                            np.asarray(x), consensus_line.values,
+                            color='blue', linewidth=1.5, alpha=0.8, label=f'Consensus({win})'
+                        )
+                except (ValueError, AttributeError):
+                    pass
 
         self.ax_buy.set_ylabel('Buy Count')
         self.ax_buy.legend(loc='upper left', fontsize='x-small')
@@ -1501,6 +1603,10 @@ class PrototypeUI(BoxLayout):
         self.ax_sell.set_ylabel('Sell Count')
         self.ax_sell.legend(loc='upper left', fontsize='x-small')
         self.ax_sell.grid(True, alpha=0.3)
+        self.ax_dom.set_ylabel('Dominance')
+        self.ax_dom.set_ylim(-1.1, 1.1)
+        self.ax_dom.legend(loc='upper left', fontsize='x-small')
+        self.ax_dom.grid(True, alpha=0.3)
 
         # Metrics text formatting (clean)
         try:
