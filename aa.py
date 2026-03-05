@@ -1,7 +1,7 @@
 """
 binary_mask_generator.py
 ========================
-Generates a binary mask DataFrame of 54 trading-signal boolean columns
+Generates a binary mask DataFrame of 58 trading-signal boolean columns
 from a 21-column indicator DataFrame produced by the oh2.py data pipeline.
 
 Each rule uses only current and historical data (no lookahead). NaN inputs
@@ -68,7 +68,7 @@ WIN_24H: int = 43200    # 24 hours
 PCT_LOW: float = 0.0901   # 9.01th percentile
 PCT_HIGH: float = 0.9099  # 90.99th percentile
 
-# Ordered list of the 54 output column names (matches rule numbering in spec)
+# Ordered list of the 58 output column names (matches rule numbering in spec)
 OUTPUT_COLUMNS: list[str] = [
     # Category 1 – PHI Gates
     "PHI_OOS_UP",
@@ -137,11 +137,16 @@ OUTPUT_COLUMNS: list[str] = [
     # CRAP Extreme Alignment
     "CRAP_EXTREME_LOW",
     "CRAP_EXTREME_HIGH",
+    # PHI Entry / Exit
+    "PRICE_ENTERS_LOWEST_PHI",
+    "PRICE_EXITS_LOWEST_PHI",
+    "PRICE_ENTERS_HIGHEST_PHI",
+    "PRICE_EXITS_HIGHEST_PHI",
 ]
 
 
 class BinaryMaskGenerator:
-    """Compute 54 binary trading-signal masks from a pipeline indicator DataFrame.
+    """Compute 58 binary trading-signal masks from a pipeline indicator DataFrame.
 
     Parameters
     ----------
@@ -180,7 +185,7 @@ class BinaryMaskGenerator:
     # ------------------------------------------------------------------
 
     def generate(self) -> pd.DataFrame:
-        """Compute all 54 binary masks and return them as a DataFrame.
+        """Compute all 58 binary masks and return them as a DataFrame.
 
         The returned DataFrame shares the same index as the input DataFrame.
         Every column is of dtype ``bool`` (Python ``True`` / ``False``).
@@ -190,7 +195,7 @@ class BinaryMaskGenerator:
         Returns
         -------
         pd.DataFrame
-            Shape ``(len(df), 54)``, columns as listed in ``OUTPUT_COLUMNS``.
+            Shape ``(len(df), 58)``, columns as listed in ``OUTPUT_COLUMNS``.
         """
         df = self._df
         w = self._window
@@ -386,6 +391,24 @@ class BinaryMaskGenerator:
         phi_cross_down_24 = _mask((rate <= phi24) & (rate_prev > phi24_prev))
 
         # ----------------------------------------------------------------
+        # PHI Entry / Exit – price crossing the envelope boundaries
+        # phi_min and phi_max are already computed in Category 1 above.
+        # ----------------------------------------------------------------
+
+        phi_min_prev = phi_min.shift(1)
+        phi_max_prev = phi_max.shift(1)
+
+        # Price drops below the minimum PHI envelope (enters oversold PHI zone)
+        price_enters_lowest_phi = _mask((rate < phi_min) & (rate_prev >= phi_min_prev))
+        # Price rises back above the minimum PHI envelope (exits oversold PHI zone)
+        price_exits_lowest_phi = _mask((rate > phi_min) & (rate_prev <= phi_min_prev))
+
+        # Price rises above the maximum PHI envelope (enters overbought PHI zone)
+        price_enters_highest_phi = _mask((rate > phi_max) & (rate_prev <= phi_max_prev))
+        # Price falls back below the maximum PHI envelope (exits overbought PHI zone)
+        price_exits_highest_phi = _mask((rate < phi_max) & (rate_prev >= phi_max_prev))
+
+        # ----------------------------------------------------------------
         # Multi-Timeframe Price Percentile
         # ----------------------------------------------------------------
 
@@ -508,6 +531,11 @@ class BinaryMaskGenerator:
                 # New: CRAP Extreme Alignment
                 "CRAP_EXTREME_LOW": crap_extreme_low,
                 "CRAP_EXTREME_HIGH": crap_extreme_high,
+                # New: PHI Entry / Exit
+                "PRICE_ENTERS_LOWEST_PHI": price_enters_lowest_phi,
+                "PRICE_EXITS_LOWEST_PHI": price_exits_lowest_phi,
+                "PRICE_ENTERS_HIGHEST_PHI": price_enters_highest_phi,
+                "PRICE_EXITS_HIGHEST_PHI": price_exits_highest_phi,
             },
             index=df.index,
         )
