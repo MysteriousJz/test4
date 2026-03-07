@@ -143,13 +143,20 @@ MASK_CATEGORIES = {
 }
 
 # Flat list of all mask names used by the Custom Rule Builder spinner.
-# The three synthetic names at the top (BUY_COUNT, SELL_COUNT, DOMINANCE) are
-# handled specially in _evaluate_rule_group() — they do not correspond to
-# individual mask columns but instead represent aggregate counts/dominance.
+# The synthetic names at the top are handled specially in _evaluate_rule_group()
+# — they do not correspond to individual mask columns but instead represent
+# aggregate counts/dominance or strategy-level parameters:
+#   BUY_COUNT      – count of active buy masks that are True at the current bar.
+#   SELL_COUNT     – count of active sell masks that are True at the current bar.
+#   DOMINANCE      – (buy_count - sell_count) at the current bar.
+#   PROFIT_TARGET  – the profit-target percentage from the Strategy Params panel.
+#   LAST_SELL_PRICE – the price of the most recent sell trade this run (None → always False).
 ALL_MASK_NAMES = [
     "BUY_COUNT",
     "SELL_COUNT",
     "DOMINANCE",
+    "PROFIT_TARGET",
+    "LAST_SELL_PRICE",
 ] + [name for cat_items in MASK_CATEGORIES.values() for name, _ in cat_items]
 
 # Per-mask colors: BUY signals = shades of green, SELL signals = shades of red
@@ -1005,6 +1012,10 @@ class PrototypeUI(BoxLayout):
         # None until a SQLite file is successfully loaded and masks.sqlite is found.
         self.masks_df = None
 
+        # Tracks the price at which the most recent sell trade occurred.
+        # Updated by run_strategy(); None until the first sell in the current run.
+        self.last_sell_price = None
+
         Clock.schedule_once(lambda dt: self._try_load_default(), 0.1)
 
     def set_toggle(self, toggle_id, state):
@@ -1149,6 +1160,9 @@ class PrototypeUI(BoxLayout):
         fee           = _pf(self.param_fee_pct,         0.25) / 100.0
         profit_target = _pf(self.param_profit_target,   0.6)
 
+        # Reset last-sell tracking for this run
+        self.last_sell_price = None
+
         # --- Step 1: trade execution ---
         usd = start_capital
         btc = 0.0
@@ -1167,6 +1181,7 @@ class PrototypeUI(BoxLayout):
                 if (price - avg_buy_price) / avg_buy_price * 100 >= profit_target:
                     usd = btc * price * (1.0 - fee)
                     trades.append(('SELL', i, price, usd, btc))
+                    self.last_sell_price = price
                     btc = 0.0; position = 'USD'; avg_buy_price = None
                     continue
 
@@ -1187,6 +1202,7 @@ class PrototypeUI(BoxLayout):
                 if sell1_ok or sell2_ok:
                     usd = btc * price * (1.0 - fee)
                     trades.append(('SELL', i, price, usd, btc))
+                    self.last_sell_price = price
                     btc = 0.0; position = 'USD'
                     avg_buy_price = None
 
@@ -1195,6 +1211,7 @@ class PrototypeUI(BoxLayout):
             last_price = float(view.iloc[-1]['CURRENT_RATE'])
             usd = btc * last_price * (1.0 - fee)
             trades.append(('SELL', len(view) - 1, last_price, usd, btc))
+            self.last_sell_price = last_price
             btc = 0.0; position = 'USD'
             avg_buy_price = None
 
@@ -1359,11 +1376,17 @@ class PrototypeUI(BoxLayout):
         Returns True if the combined result is True (or if no rules are defined).
 
         Special synthetic mask names (not columns in view_masks):
-          'BUY_COUNT'   – total count of active buy masks True at bar_idx.
-                          state='is ON' means count >= N; 'is OFF' means count < N.
-          'SELL_COUNT'  – total count of active sell masks True at bar_idx.
-          'DOMINANCE'   – (buy_count - sell_count). Threshold N interpreted as an
-                          integer; 'is ON' means dominance >= N; 'is OFF' means < N.
+          'BUY_COUNT'      – total count of active buy masks True at bar_idx.
+                             state='is ON' means count >= N; 'is OFF' means count < N.
+          'SELL_COUNT'     – total count of active sell masks True at bar_idx.
+          'DOMINANCE'      – (buy_count - sell_count). Threshold N interpreted as an
+                             integer; 'is ON' means dominance >= N; 'is OFF' means < N.
+          'PROFIT_TARGET'  – self.param_profit_target (the profit-target % from the UI).
+                             'is ON' means value >= N; 'is OFF' means value < N.
+          'LAST_SELL_PRICE'– price of the most recent sell this run (self.last_sell_price).
+                             If no sell has occurred yet, 'is ON' is always False and
+                             'is OFF' is always True.  Otherwise 'is ON' means
+                             value >= N; 'is OFF' means value < N.
 
         Patterns (for regular masks):
           'for N bars'       – mask state holds for N consecutive bars ending at bar_idx.
@@ -1431,6 +1454,22 @@ class PrototypeUI(BoxLayout):
                 # 'is ON'  → value >= N threshold
                 # 'is OFF' → value < N threshold
                 result = (value >= n) if state_is_on else (value < n)
+
+            # --- Synthetic strategy-parameter rules ---
+            elif mask_name == 'PROFIT_TARGET':
+                try:
+                    value = float(self.param_profit_target.text)
+                except (ValueError, AttributeError):
+                    value = 0.0
+                result = (value >= n) if state_is_on else (value < n)
+
+            elif mask_name == 'LAST_SELL_PRICE':
+                if self.last_sell_price is None:
+                    # No sell has occurred yet: 'is ON' → False, 'is OFF' → True
+                    result = not state_is_on
+                else:
+                    value = self.last_sell_price
+                    result = (value >= n) if state_is_on else (value < n)
 
             elif mask_name not in view_masks.columns:
                 result = True  # unknown mask: skip, don't block
