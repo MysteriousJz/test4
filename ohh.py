@@ -146,17 +146,21 @@ MASK_CATEGORIES = {
 # The synthetic names at the top are handled specially in _evaluate_rule_group()
 # — they do not correspond to individual mask columns but instead represent
 # aggregate counts/dominance or strategy-level parameters:
-#   BUY_COUNT      – count of active buy masks that are True at the current bar.
-#   SELL_COUNT     – count of active sell masks that are True at the current bar.
-#   DOMINANCE      – (buy_count - sell_count) at the current bar.
-#   PROFIT_TARGET  – the profit-target percentage from the Strategy Params panel.
+#   BUY_COUNT       – count of active buy masks that are True at the current bar.
+#   SELL_COUNT      – count of active sell masks that are True at the current bar.
+#   DOMINANCE       – (buy_count - sell_count) at the current bar.
+#   PROFIT_TARGET   – the profit-target percentage from the Strategy Params panel.
 #   LAST_SELL_PRICE – the price of the most recent sell trade this run (None → always False).
+#   BUY_CONSENSUS   – % of toggled buy masks that are True at the current bar (0–100).
+#   SELL_CONSENSUS  – % of toggled sell masks that are True at the current bar (0–100).
 ALL_MASK_NAMES = [
     "BUY_COUNT",
     "SELL_COUNT",
     "DOMINANCE",
     "PROFIT_TARGET",
     "LAST_SELL_PRICE",
+    "BUY_CONSENSUS",
+    "SELL_CONSENSUS",
 ] + [name for cat_items in MASK_CATEGORIES.values() for name, _ in cat_items]
 
 # Per-mask colors: BUY signals = shades of green, SELL signals = shades of red
@@ -1387,6 +1391,11 @@ class PrototypeUI(BoxLayout):
                              If no sell has occurred yet, 'is ON' is always False and
                              'is OFF' is always True.  Otherwise 'is ON' means
                              value >= N; 'is OFF' means value < N.
+          'BUY_CONSENSUS'  – % of toggled buy masks that are True at bar_idx (0–100).
+                             If no buy masks are toggled, 'is ON' is always False and
+                             'is OFF' is always True.
+          'SELL_CONSENSUS' – % of toggled sell masks that are True at bar_idx (0–100).
+                             Same edge-case behaviour as BUY_CONSENSUS.
 
         Patterns (for regular masks):
           'for N bars'       – mask state holds for N consecutive bars ending at bar_idx.
@@ -1403,17 +1412,18 @@ class PrototypeUI(BoxLayout):
         # Pre-fetch the entire row once to avoid repeated .iloc[bar_idx] lookups.
         _buy_count_cache  = None
         _sell_count_cache = None
+        _active_cache     = None  # set of active mask names, fetched lazily
         _bar_row_cache    = None  # entire row at bar_idx, fetched lazily
 
         def _get_buy_sell_counts():
-            nonlocal _buy_count_cache, _sell_count_cache, _bar_row_cache
+            nonlocal _buy_count_cache, _sell_count_cache, _active_cache, _bar_row_cache
             if _buy_count_cache is not None:
                 return _buy_count_cache, _sell_count_cache
             if _bar_row_cache is None:
                 _bar_row_cache = view_masks.iloc[bar_idx]
+            _active_cache = set(self.mask_switchboard.get_active_masks())
             buy_c = 0; sell_c = 0
-            active = set(self.mask_switchboard.get_active_masks())
-            for mn in active:
+            for mn in _active_cache:
                 if mn in _bar_row_cache.index:
                     try:
                         is_on = (float(_bar_row_cache[mn]) != 0)
@@ -1469,6 +1479,28 @@ class PrototypeUI(BoxLayout):
                     result = not state_is_on
                 else:
                     value = self.last_sell_price
+                    result = (value >= n) if state_is_on else (value < n)
+
+            elif mask_name == 'BUY_CONSENSUS':
+                buy_c, _ = _get_buy_sell_counts()
+                total_buy = sum(1 for m in _active_cache if m in BUY_MASKS)
+                if total_buy == 0:
+                    # No buy masks toggled: 'is ON' → False, 'is OFF' → True
+                    result = not state_is_on
+                else:
+                    value = (buy_c / total_buy) * 100
+                    result = (value >= n) if state_is_on else (value < n)
+
+            elif mask_name == 'SELL_CONSENSUS':
+                _, sell_c = _get_buy_sell_counts()
+                # Any active mask not in BUY_MASKS is a sell mask — consistent
+                # with the same convention used throughout _get_buy_sell_counts().
+                total_sell = sum(1 for m in _active_cache if m not in BUY_MASKS)
+                if total_sell == 0:
+                    # No sell masks toggled: 'is ON' → False, 'is OFF' → True
+                    result = not state_is_on
+                else:
+                    value = (sell_c / total_sell) * 100
                     result = (value >= n) if state_is_on else (value < n)
 
             elif mask_name not in view_masks.columns:
