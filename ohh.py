@@ -1179,16 +1179,6 @@ class PrototypeUI(BoxLayout):
         for i in range(len(view)):
             price = float(view.loc[i, 'CURRENT_RATE'])
 
-            # --- Profit target (skipped when profit_target <= 0) ---
-            if (profit_target > 0 and position == 'BTC'
-                    and btc > 0 and avg_buy_price is not None):
-                if (price - avg_buy_price) / avg_buy_price * 100 >= profit_target:
-                    usd = btc * price * (1.0 - fee)
-                    trades.append(('SELL', i, price, usd, btc))
-                    self.last_sell_price = price
-                    btc = 0.0; position = 'USD'; avg_buy_price = None
-                    continue
-
             # --- BUY: evaluate only when holding USD ---
             if position == 'USD' and usd > 0:
                 buy1_ok = self._evaluate_rule_group(self._buy1_rule_rows, i, view_masks)
