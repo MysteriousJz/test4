@@ -1020,6 +1020,10 @@ class PrototypeUI(BoxLayout):
         # Updated by run_strategy(); None until the first sell in the current run.
         self.last_sell_price = None
 
+        # Tracks the price at which the most recent buy trade occurred.
+        # Used by the PROFIT_TARGET synthetic rule in _evaluate_rule_group().
+        self.last_buy_price = None
+
         Clock.schedule_once(lambda dt: self._try_load_default(), 0.1)
 
     def set_toggle(self, toggle_id, state):
@@ -1162,10 +1166,10 @@ class PrototypeUI(BoxLayout):
 
         start_capital = _pf(self.param_start_capital, 1000.0)
         fee           = _pf(self.param_fee_pct,         0.25) / 100.0
-        profit_target = _pf(self.param_profit_target,   0.6)
 
-        # Reset last-sell tracking for this run
+        # Reset per-run tracking
         self.last_sell_price = None
+        self.last_buy_price  = None
 
         # --- Step 1: trade execution ---
         usd = start_capital
@@ -1173,21 +1177,11 @@ class PrototypeUI(BoxLayout):
         position = 'USD'
         trades = []
         avg_buy_price = None
-        target_price = None
 
         x_vals = view['TIME']
 
         for i in range(len(view)):
             price = float(view.loc[i, 'CURRENT_RATE'])
-
-            # --- Profit target: sell immediately when price reaches target ---
-            if position == 'BTC' and target_price is not None and price >= target_price:
-                usd = btc * price * (1.0 - fee)
-                trades.append(('SELL', i, price, usd, btc))
-                self.last_sell_price = price
-                btc = 0.0; position = 'USD'; avg_buy_price = None
-                target_price = None
-                continue
 
             # --- BUY: evaluate only when holding USD ---
             if position == 'USD' and usd > 0:
@@ -1198,19 +1192,19 @@ class PrototypeUI(BoxLayout):
                     trades.append(('BUY', i, price, usd, btc))
                     usd = 0.0; position = 'BTC'
                     avg_buy_price = price
-                    target_price = price * (1.0 + profit_target / 100.0)
+                    self.last_buy_price = price
 
             # --- SELL: evaluate only when holding BTC ---
             elif position == 'BTC' and btc > 0:
-                sell1_ok = self._evaluate_rule_group(self._sell1_rule_rows, i, view_masks)
-                sell2_ok = self._evaluate_rule_group(self._sell2_rule_rows, i, view_masks)
+                sell1_ok = self._evaluate_rule_group(self._sell1_rule_rows, i, view_masks, current_price=price)
+                sell2_ok = self._evaluate_rule_group(self._sell2_rule_rows, i, view_masks, current_price=price)
                 if sell1_ok or sell2_ok:
                     usd = btc * price * (1.0 - fee)
                     trades.append(('SELL', i, price, usd, btc))
                     self.last_sell_price = price
                     btc = 0.0; position = 'USD'
                     avg_buy_price = None
-                    target_price = None
+                    self.last_buy_price = None
 
         # Force-close any open position at end of view
         if position == 'BTC' and btc > 0:
@@ -1220,7 +1214,7 @@ class PrototypeUI(BoxLayout):
             self.last_sell_price = last_price
             btc = 0.0; position = 'USD'
             avg_buy_price = None
-            target_price = None
+            self.last_buy_price = None
 
         final_usd = usd
         roi = ((final_usd - start_capital) / start_capital) * 100
@@ -1376,7 +1370,7 @@ class PrototypeUI(BoxLayout):
             container.clear_widgets()
             rule_list.clear()
 
-    def _evaluate_rule_group(self, rule_rows, bar_idx, view_masks):
+    def _evaluate_rule_group(self, rule_rows, bar_idx, view_masks, current_price=None):
         """
         Evaluate a list of buy or sell rules for a given bar.
 
@@ -1388,8 +1382,12 @@ class PrototypeUI(BoxLayout):
           'SELL_COUNT'     – total count of active sell masks True at bar_idx.
           'DOMINANCE'      – (buy_count - sell_count). Threshold N interpreted as an
                              integer; 'is ON' means dominance >= N; 'is OFF' means < N.
-          'PROFIT_TARGET'  – self.param_profit_target (the profit-target % from the UI).
-                             'is ON' means value >= N; 'is OFF' means value < N.
+          'PROFIT_TARGET'  – True when the current bar price has reached the profit
+                             target relative to the last buy price.
+                             'is ON' means current_price >= last_buy_price * (1 + pct/100).
+                             'is OFF' means the target has NOT been reached.
+                             Returns False for 'is ON' (True for 'is OFF') when no
+                             position is currently held.
           'LAST_SELL_PRICE'– price of the most recent sell this run (self.last_sell_price).
                              If no sell has occurred yet, 'is ON' is always False and
                              'is OFF' is always True.  Otherwise 'is ON' means
@@ -1470,11 +1468,17 @@ class PrototypeUI(BoxLayout):
 
             # --- Synthetic strategy-parameter rules ---
             elif mask_name == 'PROFIT_TARGET':
-                try:
-                    value = float(self.param_profit_target.text)
-                except (ValueError, AttributeError):
-                    value = 0.0
-                result = (value >= n) if state_is_on else (value < n)
+                if self.last_buy_price is None or current_price is None:
+                    # No active position or no price data: 'is ON' → False, 'is OFF' → True
+                    result = False if state_is_on else True
+                else:
+                    try:
+                        profit_pct = float(self.param_profit_target.text)
+                        target_price = self.last_buy_price * (1.0 + profit_pct / 100.0)
+                        price_condition = (current_price >= target_price)
+                        result = price_condition if state_is_on else not price_condition
+                    except (ValueError, AttributeError):
+                        result = False if state_is_on else True
 
             elif mask_name == 'LAST_SELL_PRICE':
                 if self.last_sell_price is None:
