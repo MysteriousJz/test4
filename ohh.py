@@ -1173,11 +1173,21 @@ class PrototypeUI(BoxLayout):
         position = 'USD'
         trades = []
         avg_buy_price = None
+        target_price = None
 
         x_vals = view['TIME']
 
         for i in range(len(view)):
             price = float(view.loc[i, 'CURRENT_RATE'])
+
+            # --- Profit target: sell immediately when price reaches target ---
+            if position == 'BTC' and target_price is not None and price >= target_price:
+                usd = btc * price * (1.0 - fee)
+                trades.append(('SELL', i, price, usd, btc))
+                self.last_sell_price = price
+                btc = 0.0; position = 'USD'; avg_buy_price = None
+                target_price = None
+                continue
 
             # --- BUY: evaluate only when holding USD ---
             if position == 'USD' and usd > 0:
@@ -1188,6 +1198,7 @@ class PrototypeUI(BoxLayout):
                     trades.append(('BUY', i, price, usd, btc))
                     usd = 0.0; position = 'BTC'
                     avg_buy_price = price
+                    target_price = price * (1.0 + profit_target / 100.0)
 
             # --- SELL: evaluate only when holding BTC ---
             elif position == 'BTC' and btc > 0:
@@ -1199,6 +1210,7 @@ class PrototypeUI(BoxLayout):
                     self.last_sell_price = price
                     btc = 0.0; position = 'USD'
                     avg_buy_price = None
+                    target_price = None
 
         # Force-close any open position at end of view
         if position == 'BTC' and btc > 0:
@@ -1208,6 +1220,7 @@ class PrototypeUI(BoxLayout):
             self.last_sell_price = last_price
             btc = 0.0; position = 'USD'
             avg_buy_price = None
+            target_price = None
 
         final_usd = usd
         roi = ((final_usd - start_capital) / start_capital) * 100
